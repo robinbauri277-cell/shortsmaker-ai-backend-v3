@@ -1,0 +1,21 @@
+{
+  "name": "shortsmaker-ai-backend",
+  "version": "2.0.0",
+  "private": true,
+  "description": "ShortsMaker AI backend: upload, trim and convert videos to MP4 shorts with FFmpeg.",
+  "main": "src/server.js",
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "test:core": "node --test test/core.test.js",
+    "test:api": "node --test test/api.test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "multer": "^2.0.2"
+  }
+}

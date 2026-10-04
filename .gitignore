@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+tmp/
+shortsmaker-data/
+.DS_Store

@@ -1,0 +1,18 @@
+# OPTIONAL Render Blueprint. Using it creates a NEW service; it does not modify
+# your existing "shortsmaker-ai-backend-1" service. See README for the plan.
+services:
+  - type: web
+    name: shortsmaker-ai-backend-2
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGINS
+        value: https://shortsmakerhub.blogspot.com,https://shortsmakerhub.blogspot.in
+      - key: MAX_UPLOAD_MB
+        value: "200"
+      - key: PUBLIC_BASE_URL
+        sync: false
