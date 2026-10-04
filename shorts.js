@@ -280,8 +280,7 @@ function createShortsRouter({ config, ffmpeg, jobs }) {
     }
   });
 
-  return router;
+    return router;
 }
 
 module.exports = { createShortsRouter };
-``**
