@@ -1,4 +1,4 @@
-'use strict';
+      'use strict';
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -17,11 +17,24 @@ const {
   ALLOWED_EXT
 } = require('./validate');
 
+const {
+  downloadYouTube,
+  validateYouTubeUrl
+} = require('./youtube');
+
 const wrap = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
+
+/*
+ * ==========================================================
+ * TOKEN HELPERS
+ * ==========================================================
+ */
+
 function tokenFrom(req) {
-  const headerToken = req.get('X-Job-Token');
+  const headerToken =
+    req.get('X-Job-Token');
 
   if (
     typeof headerToken === 'string' &&
@@ -34,6 +47,7 @@ function tokenFrom(req) {
     ? req.query.token
     : '';
 }
+
 
 function uploadTokenFrom(req) {
   const headerToken =
@@ -55,6 +69,13 @@ function uploadTokenFrom(req) {
 
   return '';
 }
+
+
+/*
+ * ==========================================================
+ * JSON BODY HELPER
+ * ==========================================================
+ */
 
 function parseJsonBody(req) {
   if (
@@ -86,12 +107,22 @@ function parseJsonBody(req) {
   return {};
 }
 
+
+/*
+ * ==========================================================
+ * ROUTER
+ * ==========================================================
+ */
+
 function createShortsRouter({
   config,
   ffmpeg,
   jobs
 }) {
-  const router = express.Router();
+
+  const router =
+    express.Router();
+
 
   /*
    * ==========================================================
@@ -99,55 +130,62 @@ function createShortsRouter({
    * ==========================================================
    */
 
-  const uploadLimiter = rateLimit({
-    windowMs:
-      config.rateLimit.uploadWindowMs,
+  const uploadLimiter =
+    rateLimit({
+      windowMs:
+        config.rateLimit.uploadWindowMs,
 
-    limit:
-      config.rateLimit.uploadMax,
+      limit:
+        config.rateLimit.uploadMax,
 
-    standardHeaders:
-      'draft-7',
+      standardHeaders:
+        'draft-7',
 
-    legacyHeaders:
-      false,
+      legacyHeaders:
+        false,
 
-    message: {
-      error:
-        'Too many uploads. Please wait before trying again.',
-      code:
-        'RATE_LIMITED'
-    }
-  });
+      message: {
+        error:
+          'Too many uploads. Please wait before trying again.',
+
+        code:
+          'RATE_LIMITED'
+      }
+    });
+
 
   /*
-   * Chunk upload needs more requests than normal upload.
-   * A 500 MB file with 8 MB chunks needs about 63 chunks.
+   * Chunk uploads need many requests.
+   *
+   * 500 MB / 8 MB = approximately 63 chunks.
    */
 
-  const chunkLimiter = rateLimit({
-    windowMs:
-      config.rateLimit.uploadWindowMs,
+  const chunkLimiter =
+    rateLimit({
+      windowMs:
+        config.rateLimit.uploadWindowMs,
 
-    limit:
-      Math.max(
-        config.rateLimit.uploadMax * 100,
-        1000
-      ),
+      limit:
+        Math.max(
+          config.rateLimit.uploadMax * 100,
+          1000
+        ),
 
-    standardHeaders:
-      'draft-7',
+      standardHeaders:
+        'draft-7',
 
-    legacyHeaders:
-      false,
+      legacyHeaders:
+        false,
 
-    message: {
-      error:
-        'Too many upload chunks. Please slow down.',
-      code:
-        'RATE_LIMITED'
-    }
-  });
+      message: {
+        error:
+          'Too many upload chunks. Please slow down.',
+
+        code:
+          'RATE_LIMITED'
+      }
+    });
+
 
   /*
    * ==========================================================
@@ -157,15 +195,18 @@ function createShortsRouter({
 
   const storage =
     multer.diskStorage({
+
       destination: (
         req,
         file,
         cb
       ) => {
+
         cb(
           null,
           jobs.uploadsDir
         );
+
       },
 
       filename: (
@@ -173,6 +214,7 @@ function createShortsRouter({
         file,
         cb
       ) => {
+
         const ext =
           path.extname(
             file.originalname || ''
@@ -188,25 +230,34 @@ function createShortsRouter({
           crypto.randomUUID() +
             safeExt
         );
+
       }
+
     });
+
 
   const upload =
     multer({
+
       storage,
 
       limits: {
+
         fileSize:
           config.maxUploadBytes,
 
-        files: 1,
+        files:
+          1,
 
-        fields: 20,
+        fields:
+          20,
 
         fieldSize:
           1024,
 
-        parts: 25
+        parts:
+          25
+
       },
 
       fileFilter: (
@@ -214,42 +265,59 @@ function createShortsRouter({
         file,
         cb
       ) => {
+
         try {
+
           checkUploadMeta(
             file.originalname,
             file.mimetype
           );
 
-          cb(null, true);
+          cb(
+            null,
+            true
+          );
+
         } catch (error) {
+
           cb(error);
+
         }
+
       }
+
     }).single('video');
+
 
   function handleUpload(
     req,
     res,
     next
   ) {
+
     upload(
       req,
       res,
       (error) => {
+
         if (!error) {
           return next();
         }
+
 
         if (
           error instanceof
           multer.MulterError
         ) {
+
           if (
             error.code ===
             'LIMIT_FILE_SIZE'
           ) {
+
             return next(
               new ValidationError(
+
                 'FILE_TOO_LARGE',
 
                 `File is too large. Maximum is ${Math.round(
@@ -258,45 +326,67 @@ function createShortsRouter({
                 )} MB.`,
 
                 413
+
               )
             );
+
           }
+
 
           if (
             error.code ===
             'LIMIT_UNEXPECTED_FILE'
           ) {
+
             return next(
               new ValidationError(
+
                 'WRONG_FIELD_NAME',
 
                 'The video field must be named "video".',
 
                 400
+
               )
             );
+
           }
+
 
           return next(
             new ValidationError(
+
               'BAD_UPLOAD',
 
               'The upload was malformed.',
 
               400
+
             )
           );
+
         }
 
+
         next(error);
+
       }
     );
+
   }
+
+
+  /*
+   * ==========================================================
+   * BASE URL
+   * ==========================================================
+   */
 
   const baseUrl =
     (req) =>
       config.publicBaseUrl ||
       `${req.protocol}://${req.get('host')}`;
+
 
   /*
    * ==========================================================
@@ -310,29 +400,39 @@ function createShortsRouter({
     parse,
     allowAI
   ) {
+
     const file =
       req.file;
 
+
     if (!file) {
+
       throw new ValidationError(
+
         'NO_FILE',
 
         'No video uploaded. Send multipart/form-data with a field named "video".',
 
         400
+
       );
+
     }
 
+
     try {
+
       const source =
         await ffmpeg.probe(
           file.path
         );
 
+
       assertSource(
         source,
         config
       );
+
 
       const plan =
         parse(
@@ -341,15 +441,20 @@ function createShortsRouter({
           config
         );
 
+
       const aiRequested =
         Boolean(
+
           allowAI &&
           config.aiHighlights &&
           config.geminiApiKey
+
         );
+
 
       const job =
         await jobs.createJob({
+
           inputPath:
             file.path,
 
@@ -358,12 +463,16 @@ function createShortsRouter({
           ...plan,
 
           aiRequested
+
         });
+
 
       const base =
         baseUrl(req);
 
+
       res.status(202).json({
+
         jobId:
           job.id,
 
@@ -387,15 +496,19 @@ function createShortsRouter({
             : job.clips.length,
 
         warnings: [
+
           ...(job.warnings || []),
 
           ...(allowAI &&
           config.aiHighlights &&
           !config.geminiApiKey
             ? [
+
                 'AI highlights are enabled but GEMINI_API_KEY is not configured. Falling back to basic clips.'
+
               ]
             : [])
+
         ],
 
         statusUrl:
@@ -403,20 +516,294 @@ function createShortsRouter({
 
         resultUrl:
           `${base}/api/shorts/result/${job.id}`
+
       });
+
+
     } catch (error) {
+
       await fs.promises
         .rm(
           file.path,
           {
-            force: true
+            force:
+              true
           }
         )
         .catch(() => {});
 
+
       throw error;
+
     }
+
   }
+
+
+  /*
+   * ==========================================================
+   * YOUTUBE URL PROCESSING
+   * ==========================================================
+   *
+   * POST /api/shorts/youtube
+   *
+   * JSON:
+   *
+   * {
+   *   "youtubeUrl":
+   *     "https://www.youtube.com/watch?v=VIDEO_ID",
+   *
+   *   "duration": 60,
+   *   "clipCount": 3,
+   *   "start": 0,
+   *   "aspect": "9:16",
+   *   "resolution": "720p",
+   *   "hook": "",
+   *   "instructions": ""
+   * }
+   *
+   * Flow:
+   *
+   * YouTube URL
+   *      ↓
+   * validate URL
+   *      ↓
+   * yt-dlp download
+   *      ↓
+   * FFprobe
+   *      ↓
+   * Gemini AI
+   *      ↓
+   * FFmpeg
+   *      ↓
+   * Shorts
+   *
+   * ==========================================================
+   */
+
+  router.post(
+
+    '/youtube',
+
+    uploadLimiter,
+
+    express.json({
+      limit:
+        '32kb'
+    }),
+
+    wrap(
+
+      async (
+        req,
+        res
+      ) => {
+
+        const body =
+          parseJsonBody(req);
+
+
+        const youtubeUrl =
+          validateYouTubeUrl(
+            body.youtubeUrl
+          );
+
+
+        /*
+         * Download YouTube video.
+         */
+
+        const downloaded =
+          await downloadYouTube({
+
+            url:
+              youtubeUrl,
+
+            outputDir:
+              jobs.uploadsDir,
+
+            maxBytes:
+              config.maxUploadBytes,
+
+            timeoutMs:
+              20 * 60 * 1000
+
+          });
+
+
+        try {
+
+          /*
+           * Probe downloaded video.
+           */
+
+          const source =
+            await ffmpeg.probe(
+              downloaded.path
+            );
+
+
+          assertSource(
+            source,
+            config
+          );
+
+
+          /*
+           * Convert incoming options
+           * using the same validation
+           * used by normal processing.
+           */
+
+          const processBody = {
+
+            ...body
+
+          };
+
+
+          /*
+           * Support both frontend field
+           * naming styles.
+           */
+
+          if (
+            processBody.start ===
+              undefined &&
+            processBody.startTime !==
+              undefined
+          ) {
+
+            processBody.start =
+              processBody.startTime;
+
+          }
+
+
+          if (
+            processBody.aspect ===
+              undefined &&
+            processBody.aspectRatio !==
+              undefined
+          ) {
+
+            processBody.aspect =
+              processBody.aspectRatio;
+
+          }
+
+
+          const plan =
+            parseProcessOptions(
+              processBody,
+              source,
+              config
+            );
+
+
+          /*
+           * Enable Gemini AI if configured.
+           */
+
+          const aiRequested =
+            Boolean(
+
+              config.aiHighlights &&
+              config.geminiApiKey
+
+            );
+
+
+          /*
+           * Create normal ShortsMaker job.
+           */
+
+          const job =
+            await jobs.createJob({
+
+              inputPath:
+                downloaded.path,
+
+              source,
+
+              ...plan,
+
+              aiRequested
+
+            });
+
+
+          const base =
+            baseUrl(req);
+
+
+          res.status(202).json({
+
+            jobId:
+              job.id,
+
+            accessToken:
+              job.token,
+
+            status:
+              job.status,
+
+            mode:
+              aiRequested
+                ? 'ai-highlights'
+                : job.mode,
+
+            ai:
+              aiRequested,
+
+            clipCount:
+              aiRequested
+                ? 0
+                : job.clips.length,
+
+            source:
+              'youtube',
+
+            warnings:
+              job.warnings || [],
+
+            statusUrl:
+              `${base}/api/shorts/status/${job.id}`,
+
+            resultUrl:
+              `${base}/api/shorts/result/${job.id}`
+
+          });
+
+
+        } catch (error) {
+
+          /*
+           * Delete downloaded source
+           * if job creation/probing fails.
+           */
+
+          await fs.promises
+            .rm(
+              downloaded.path,
+              {
+                force:
+                  true
+              }
+            )
+            .catch(() => {});
+
+
+          throw error;
+
+        }
+
+      }
+
+    )
+
+  );
+
 
   /*
    * ==========================================================
@@ -430,34 +817,44 @@ function createShortsRouter({
    *   "size": 12345678,
    *   "mimeType": "video/mp4"
    * }
+   *
+   * ==========================================================
    */
 
   router.post(
+
     '/upload/init',
 
     uploadLimiter,
 
     express.json({
-      limit: '32kb'
+      limit:
+        '32kb'
     }),
 
     wrap(
+
       async (
         req,
         res
       ) => {
+
         const body =
           parseJsonBody(req);
 
+
         const filename =
           String(
-            body.filename || ''
+            body.filename ||
+              ''
           ).trim();
+
 
         const size =
           Number(
             body.size
           );
+
 
         const mimeType =
           String(
@@ -465,13 +862,21 @@ function createShortsRouter({
               'application/octet-stream'
           );
 
+
         if (!filename) {
+
           throw new ValidationError(
+
             'BAD_FILENAME',
+
             'Video filename is required.',
+
             400
+
           );
+
         }
+
 
         if (
           !Number.isSafeInteger(
@@ -479,18 +884,27 @@ function createShortsRouter({
           ) ||
           size <= 0
         ) {
+
           throw new ValidationError(
+
             'BAD_UPLOAD_SIZE',
+
             'Invalid video file size.',
+
             400
+
           );
+
         }
+
 
         if (
           size >
           config.maxUploadBytes
         ) {
+
           throw new ValidationError(
+
             'FILE_TOO_LARGE',
 
             `File is too large. Maximum is ${Math.round(
@@ -499,22 +913,32 @@ function createShortsRouter({
             )} MB.`,
 
             413
+
           );
+
         }
+
 
         checkUploadMeta(
           filename,
           mimeType
         );
 
+
         const session =
           await jobs.createUploadSession({
+
             filename,
+
             size,
+
             mimeType
+
           });
 
+
         res.status(201).json({
+
           uploadId:
             session.uploadId,
 
@@ -532,10 +956,15 @@ function createShortsRouter({
 
           status:
             'created'
+
         });
+
       }
+
     )
+
   );
+
 
   /*
    * ==========================================================
@@ -545,36 +974,45 @@ function createShortsRouter({
    * PUT /api/shorts/upload/chunk
    *
    * Headers:
+   *
    * X-Upload-Id
    * X-Upload-Token
    * X-Chunk-Index
    *
    * Body:
    * raw binary
+   *
+   * ==========================================================
    */
 
   router.put(
+
     '/upload/chunk',
 
     chunkLimiter,
 
     express.raw({
+
       type:
         () => true,
 
       limit:
         '9mb'
+
     }),
 
     wrap(
+
       async (
         req,
         res
       ) => {
+
         const uploadId =
           req.get(
             'X-Upload-Id'
           ) ||
+
           (
             typeof req.query.uploadId ===
             'string'
@@ -582,45 +1020,72 @@ function createShortsRouter({
               : ''
           );
 
+
         const uploadToken =
           uploadTokenFrom(req);
+
 
         const indexHeader =
           req.get(
             'X-Chunk-Index'
           );
 
+
         const index =
           Number(
             indexHeader
           );
 
+
         if (!uploadId) {
+
           throw new ValidationError(
+
             'UPLOAD_ID_REQUIRED',
+
             'Upload ID is required.',
+
             400
+
           );
+
         }
 
+
         if (!uploadToken) {
+
           throw new ValidationError(
+
             'UPLOAD_TOKEN_REQUIRED',
+
             'Upload token is required.',
+
             401
+
           );
+
         }
+
 
         if (
           indexHeader === null ||
-          !Number.isInteger(index)
+          !Number.isInteger(
+            index
+          )
         ) {
+
           throw new ValidationError(
+
             'BAD_CHUNK_INDEX',
+
             'Chunk index is required.',
+
             400
+
           );
+
         }
+
 
         const buffer =
           Buffer.isBuffer(
@@ -629,23 +1094,36 @@ function createShortsRouter({
             ? req.body
             : Buffer.from([]);
 
+
         const result =
           await jobs.saveUploadChunk({
+
             uploadId,
+
             uploadToken,
+
             index,
+
             buffer
+
           });
 
+
         res.status(200).json({
+
           ...result,
 
           status:
             'chunk-received'
+
         });
+
       }
+
     )
+
   );
+
 
   /*
    * ==========================================================
@@ -653,50 +1131,75 @@ function createShortsRouter({
    * ==========================================================
    *
    * POST /api/shorts/upload/complete
+   *
+   * ==========================================================
    */
 
   router.post(
+
     '/upload/complete',
 
     uploadLimiter,
 
     express.json({
-      limit: '32kb'
+      limit:
+        '32kb'
     }),
 
     wrap(
+
       async (
         req,
         res
       ) => {
+
         const body =
           parseJsonBody(req);
 
+
         const uploadId =
           String(
-            body.uploadId || ''
+            body.uploadId ||
+              ''
           ).trim();
+
 
         const uploadToken =
           String(
-            body.uploadToken || ''
+            body.uploadToken ||
+              ''
           ).trim();
 
+
         if (!uploadId) {
+
           throw new ValidationError(
+
             'UPLOAD_ID_REQUIRED',
+
             'Upload ID is required.',
+
             400
+
           );
+
         }
 
+
         if (!uploadToken) {
+
           throw new ValidationError(
+
             'UPLOAD_TOKEN_REQUIRED',
+
             'Upload token is required.',
+
             401
+
           );
+
         }
+
 
         const mode =
           String(
@@ -704,19 +1207,27 @@ function createShortsRouter({
               'process'
           ).toLowerCase();
 
+
         if (
           mode !== 'process' &&
           mode !== 'trim'
         ) {
+
           throw new ValidationError(
+
             'BAD_MODE',
+
             'Mode must be "process" or "trim".',
+
             400
+
           );
+
         }
 
+
         /*
-         * Assemble all chunks into one file.
+         * Assemble chunks.
          */
 
         const completed =
@@ -725,7 +1236,9 @@ function createShortsRouter({
             uploadToken
           );
 
+
         const file = {
+
           path:
             completed.path,
 
@@ -738,11 +1251,14 @@ function createShortsRouter({
 
           size:
             completed.size
+
         };
 
+
         try {
+
           /*
-           * Verify the completed file.
+           * Verify video.
            */
 
           const source =
@@ -750,38 +1266,55 @@ function createShortsRouter({
               file.path
             );
 
+
           assertSource(
             source,
             config
           );
 
+
           /*
-           * IMPORTANT:
-           *
-           * Keep the original validation field names.
-           *
-           * process:
-           * duration
-           * clipCount
-           * start
-           * aspect
-           * resolution
-           *
-           * trim:
-           * start
-           * end
-           * aspect
-           * resolution
+           * Keep validation field names.
            */
 
           const processBody = {
+
             ...body
+
           };
+
+
+          if (
+            processBody.start ===
+              undefined &&
+            processBody.startTime !==
+              undefined
+          ) {
+
+            processBody.start =
+              processBody.startTime;
+
+          }
+
+
+          if (
+            processBody.aspect ===
+              undefined &&
+            processBody.aspectRatio !==
+              undefined
+          ) {
+
+            processBody.aspect =
+              processBody.aspectRatio;
+
+          }
+
 
           const parse =
             mode === 'trim'
               ? parseTrimOptions
               : parseProcessOptions;
+
 
           const plan =
             parse(
@@ -790,26 +1323,29 @@ function createShortsRouter({
               config
             );
 
+
           /*
-           * AI is available only for normal
-           * /process mode.
-           *
-           * Manual trim never uses AI.
+           * AI only for process mode.
            */
 
           const allowAI =
             mode ===
             'process';
 
+
           const aiRequested =
             Boolean(
+
               allowAI &&
               config.aiHighlights &&
               config.geminiApiKey
+
             );
+
 
           const job =
             await jobs.createJob({
+
               inputPath:
                 file.path,
 
@@ -818,12 +1354,16 @@ function createShortsRouter({
               ...plan,
 
               aiRequested
+
             });
+
 
           const base =
             baseUrl(req);
 
+
           res.status(202).json({
+
             uploadId,
 
             jobId:
@@ -849,15 +1389,19 @@ function createShortsRouter({
                 : job.clips.length,
 
             warnings: [
+
               ...(job.warnings || []),
 
               ...(allowAI &&
               config.aiHighlights &&
               !config.geminiApiKey
                 ? [
+
                     'AI highlights are enabled but GEMINI_API_KEY is not configured. Falling back to basic clips.'
+
                   ]
                 : [])
+
             ],
 
             statusUrl:
@@ -865,22 +1409,33 @@ function createShortsRouter({
 
             resultUrl:
               `${base}/api/shorts/result/${job.id}`
+
           });
+
+
         } catch (error) {
+
           await fs.promises
             .rm(
               file.path,
               {
-                force: true
+                force:
+                  true
               }
             )
             .catch(() => {});
 
+
           throw error;
+
         }
+
       }
+
     )
+
   );
+
 
   /*
    * ==========================================================
@@ -889,26 +1444,38 @@ function createShortsRouter({
    */
 
   router.delete(
+
     '/upload/:uploadId',
 
     wrap(
+
       async (
         req,
         res
       ) => {
+
         const uploadId =
           req.params.uploadId;
+
 
         const uploadToken =
           uploadTokenFrom(req);
 
+
         if (!uploadToken) {
+
           throw new ValidationError(
+
             'UPLOAD_TOKEN_REQUIRED',
+
             'Upload token is required.',
+
             401
+
           );
+
         }
+
 
         const result =
           await jobs.cancelUpload(
@@ -916,12 +1483,17 @@ function createShortsRouter({
             uploadToken
           );
 
+
         res.json(
           result
         );
+
       }
+
     )
+
   );
+
 
   /*
    * ==========================================================
@@ -930,6 +1502,7 @@ function createShortsRouter({
    */
 
   router.post(
+
     '/process',
 
     uploadLimiter,
@@ -937,18 +1510,27 @@ function createShortsRouter({
     handleUpload,
 
     wrap(
+
       (
         req,
         res
       ) =>
         createFromUpload(
+
           req,
+
           res,
+
           parseProcessOptions,
+
           true
+
         )
+
     )
+
   );
+
 
   /*
    * ==========================================================
@@ -957,6 +1539,7 @@ function createShortsRouter({
    */
 
   router.post(
+
     '/trim',
 
     uploadLimiter,
@@ -964,18 +1547,27 @@ function createShortsRouter({
     handleUpload,
 
     wrap(
+
       (
         req,
         res
       ) =>
         createFromUpload(
+
           req,
+
           res,
+
           parseTrimOptions,
+
           false
+
         )
+
     )
+
   );
+
 
   /*
    * ==========================================================
@@ -984,6 +1576,7 @@ function createShortsRouter({
    */
 
   router.get(
+
     '/status/:jobId',
 
     (
@@ -991,28 +1584,42 @@ function createShortsRouter({
       res,
       next
     ) => {
+
       try {
+
         const job =
           jobs.getAuthorized(
+
             req.params.jobId,
+
             tokenFrom(req)
+
           );
+
 
         res.set(
           'Cache-Control',
           'no-store'
         );
 
+
         res.json(
           jobs.statusView(
             job
           )
         );
+
+
       } catch (error) {
+
         next(error);
+
       }
+
     }
+
   );
+
 
   /*
    * ==========================================================
@@ -1021,6 +1628,7 @@ function createShortsRouter({
    */
 
   router.get(
+
     '/result/:jobId',
 
     (
@@ -1028,37 +1636,54 @@ function createShortsRouter({
       res,
       next
     ) => {
+
       try {
+
         const job =
           jobs.getAuthorized(
+
             req.params.jobId,
+
             tokenFrom(req)
+
           );
+
 
         res.set(
           'Cache-Control',
           'no-store'
         );
 
+
         if (
           job.status ===
           'completed'
         ) {
+
           return res.json(
+
             jobs.resultView(
+
               job,
+
               baseUrl(req)
+
             )
+
           );
+
         }
+
 
         if (
           job.status ===
           'failed'
         ) {
+
           return res.status(
             422
           ).json({
+
             error:
               job.error,
 
@@ -1070,12 +1695,16 @@ function createShortsRouter({
 
             errorCode:
               job.errorCode
+
           });
+
         }
+
 
         return res.status(
           409
         ).json({
+
           error:
             'The job is not finished yet.',
 
@@ -1087,12 +1716,19 @@ function createShortsRouter({
 
           progress:
             job.progress
+
         });
+
       } catch (error) {
+
         next(error);
+
       }
+
     }
+
   );
+
 
   /*
    * ==========================================================
@@ -1101,6 +1737,7 @@ function createShortsRouter({
    */
 
   router.get(
+
     '/download/:jobId/:index',
 
     (
@@ -1108,57 +1745,86 @@ function createShortsRouter({
       res,
       next
     ) => {
+
       try {
+
         const job =
           jobs.getAuthorized(
+
             req.params.jobId,
+
             tokenFrom(req)
+
           );
+
 
         if (
           job.status !==
           'completed'
         ) {
+
           throw new ValidationError(
+
             'JOB_NOT_READY',
+
             'The job is not finished yet.',
+
             409
+
           );
+
         }
+
 
         if (
           !/^\d{1,3}$/.test(
             req.params.index
           )
         ) {
+
           throw new ValidationError(
+
             'NOT_FOUND',
+
             'Clip not found.',
+
             404
+
           );
+
         }
+
 
         const index =
           Number(
             req.params.index
           );
 
+
         const {
           root,
           name
         } =
           jobs.fileFor(
+
             job,
+
             index
+
           );
+
 
         const download =
           req.query.download ===
           '1';
 
+
         res.sendFile(
+
           name,
+
           {
+
             root,
 
             dotfiles:
@@ -1168,6 +1834,7 @@ function createShortsRouter({
               true,
 
             headers: {
+
               'Content-Type':
                 'video/mp4',
 
@@ -1178,35 +1845,57 @@ function createShortsRouter({
 
               'Cache-Control':
                 'private, max-age=300'
+
             }
+
           },
 
           (
             error
           ) => {
+
             if (
               error &&
               !res.headersSent
             ) {
+
               next(
+
                 new ValidationError(
+
                   'NOT_FOUND',
+
                   'Clip not found or expired.',
+
                   404
+
                 )
+
               );
+
             }
+
           }
+
         );
+
+
       } catch (error) {
+
         next(error);
+
       }
+
     }
+
   );
 
+
   return router;
+
 }
+
 
 module.exports = {
   createShortsRouter
-};
+};    
