@@ -7,7 +7,7 @@ const express = require('express');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 
-const { ValidationError } = require('../errors');
+const { ValidationError } = require('./errors');
 
 const {
   checkUploadMeta,
@@ -15,7 +15,7 @@ const {
   parseProcessOptions,
   parseTrimOptions,
   ALLOWED_EXT
-} = require('../validate');
+} = require('./validate');
 
 const wrap = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
