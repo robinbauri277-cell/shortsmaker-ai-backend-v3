@@ -30,79 +30,129 @@ const ERROR_TEXT = {
 };
 
 /*
- * Chunk upload defaults.
+ * ==========================================================
+ * CHUNK UPLOAD
+ * ==========================================================
  *
- * 8 MB chunks are small enough for mobile connections while
- * keeping the number of requests reasonable for a 500 MB file.
+ * 8 MB chunks.
+ *
+ * 500 MB file ≈ 63 chunks.
  */
-const CHUNK_SIZE = 8 * 1024 * 1024;
+
+const CHUNK_SIZE =
+  8 * 1024 * 1024;
 
 function safeEqual(a, b) {
-  const x = Buffer.from(String(a));
-  const y = Buffer.from(String(b));
+  const x =
+    Buffer.from(
+      String(a)
+    );
+
+  const y =
+    Buffer.from(
+      String(b)
+    );
 
   return (
     x.length === y.length &&
-    crypto.timingSafeEqual(x, y)
+    crypto.timingSafeEqual(
+      x,
+      y
+    )
   );
 }
 
 function safeFilename(name) {
-  const base = path.basename(String(name || 'video.mp4'));
+  const base =
+    path.basename(
+      String(
+        name ||
+          'video.mp4'
+      )
+    );
 
-  const ext = path.extname(base).toLowerCase();
+  const ext =
+    path.extname(
+      base
+    ).toLowerCase();
 
-  return (
-    /^[a-z0-9._-]+$/i.test(base)
-      ? base
-      : `upload${ext || '.mp4'}`
-  );
+  return /^[a-z0-9._-]+$/i.test(
+    base
+  )
+    ? base
+    : `upload${ext || '.mp4'}`;
 }
 
 class JobManager {
-  constructor(cfg, ffmpeg, logger = console) {
-    this.cfg = cfg;
-    this.ffmpeg = ffmpeg;
-    this.log = logger;
+  constructor(
+    cfg,
+    ffmpeg,
+    logger = console
+  ) {
+    this.cfg =
+      cfg;
 
-    this.jobs = new Map();
-    this.queue = [];
+    this.ffmpeg =
+      ffmpeg;
 
-    this.running = 0;
-    this.reserved = 0;
+    this.log =
+      logger;
+
+    this.jobs =
+      new Map();
+
+    this.queue =
+      [];
+
+    this.running =
+      0;
+
+    this.reserved =
+      0;
 
     /*
      * Resumable upload sessions.
      */
-    this.uploadSessions = new Map();
+    this.uploadSessions =
+      new Map();
 
-    this.uploadsDir = path.join(
-      cfg.dataDir,
-      'uploads'
-    );
+    this.uploadsDir =
+      path.join(
+        cfg.dataDir,
+        'uploads'
+      );
 
-    this.jobsDir = path.join(
-      cfg.dataDir,
-      'jobs'
-    );
+    this.jobsDir =
+      path.join(
+        cfg.dataDir,
+        'jobs'
+      );
 
-    this.sessionsDir = path.join(
-      this.uploadsDir,
-      'sessions'
-    );
+    this.sessionsDir =
+      path.join(
+        this.uploadsDir,
+        'sessions'
+      );
 
-    this.timer = null;
-    this.ai = null;
+    this.timer =
+      null;
 
+    this.ai =
+      null;
+
+    /*
+     * Initialize Gemini only when configured.
+     */
     if (
       cfg.aiHighlights &&
       cfg.geminiApiKey
     ) {
       try {
-        this.ai = createAIHighlights(
-          cfg,
-          logger
-        );
+        this.ai =
+          createAIHighlights(
+            cfg,
+            logger
+          );
 
         this.log.log(
           '[ai] Gemini highlight analyzer enabled'
@@ -115,6 +165,12 @@ class JobManager {
       }
     }
   }
+
+  /*
+   * ==========================================================
+   * INITIALIZE
+   * ==========================================================
+   */
 
   async init() {
     await fsp.rm(
@@ -157,35 +213,57 @@ class JobManager {
     this.uploadSessions.clear();
   }
 
+  /*
+   * ==========================================================
+   * CLEANUP TIMER
+   * ==========================================================
+   */
+
   startCleanupTimer() {
-    this.timer = setInterval(
-      () => {
-        this.cleanup().catch(
-          (e) =>
-            this.log.error(
-              '[cleanup] failed:',
-              e.message
-            )
-        );
-      },
-      this.cfg.cleanupIntervalMs
-    );
+    this.timer =
+      setInterval(
+        () => {
+          this.cleanup().catch(
+            (e) =>
+              this.log.error(
+                '[cleanup] failed:',
+                e.message
+              )
+          );
+        },
+        this.cfg.cleanupIntervalMs
+      );
 
     this.timer.unref();
   }
 
   stop() {
     if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+      clearInterval(
+        this.timer
+      );
+
+      this.timer =
+        null;
     }
   }
 
+  /*
+   * ==========================================================
+   * STATS
+   * ==========================================================
+   */
+
   stats() {
     return {
-      running: this.running,
-      queued: this.queue.length,
-      uploads: this.uploadSessions.size
+      running:
+        this.running,
+
+      queued:
+        this.queue.length,
+
+      uploads:
+        this.uploadSessions.size
     };
   }
 
@@ -204,7 +282,9 @@ class JobManager {
       Number(size);
 
     if (
-      !Number.isSafeInteger(totalSize) ||
+      !Number.isSafeInteger(
+        totalSize
+      ) ||
       totalSize <= 0
     ) {
       throw new ValidationError(
@@ -220,9 +300,12 @@ class JobManager {
     ) {
       throw new ValidationError(
         'FILE_TOO_LARGE',
+
         `File is too large. Maximum is ${Math.round(
-          this.cfg.maxUploadBytes / 1048576
+          this.cfg.maxUploadBytes /
+            1048576
         )} MB.`,
+
         413
       );
     }
@@ -233,7 +316,9 @@ class JobManager {
     const token =
       crypto
         .randomBytes(32)
-        .toString('base64url');
+        .toString(
+          'base64url'
+        );
 
     const dir =
       path.join(
@@ -260,10 +345,15 @@ class JobManager {
       token,
 
       filename:
-        safeFilename(filename),
+        safeFilename(
+          filename
+        ),
 
       mimeType:
-        String(mimeType || 'application/octet-stream'),
+        String(
+          mimeType ||
+            'application/octet-stream'
+        ),
 
       size:
         totalSize,
@@ -297,11 +387,19 @@ class JobManager {
     );
 
     return {
-      uploadId: id,
-      uploadToken: token,
-      chunkSize: CHUNK_SIZE,
+      uploadId:
+        id,
+
+      uploadToken:
+        token,
+
+      chunkSize:
+        CHUNK_SIZE,
+
       totalChunks,
-      size: totalSize
+
+      size:
+        totalSize
     };
   }
 
@@ -334,9 +432,7 @@ class JobManager {
       );
     }
 
-    if (
-      !token
-    ) {
+    if (!token) {
       throw new ValidationError(
         'UPLOAD_TOKEN_REQUIRED',
         'Upload token is required.',
@@ -359,6 +455,12 @@ class JobManager {
 
     return session;
   }
+
+  /*
+   * ==========================================================
+   * SAVE CHUNK
+   * ==========================================================
+   */
 
   async saveUploadChunk({
     uploadId,
@@ -386,9 +488,12 @@ class JobManager {
       Number(index);
 
     if (
-      !Number.isInteger(chunkIndex) ||
+      !Number.isInteger(
+        chunkIndex
+      ) ||
       chunkIndex < 0 ||
-      chunkIndex >= session.totalChunks
+      chunkIndex >=
+        session.totalChunks
     ) {
       throw new ValidationError(
         'BAD_CHUNK_INDEX',
@@ -398,7 +503,9 @@ class JobManager {
     }
 
     if (
-      !Buffer.isBuffer(buffer) ||
+      !Buffer.isBuffer(
+        buffer
+      ) ||
       buffer.length === 0
     ) {
       throw new ValidationError(
@@ -432,12 +539,17 @@ class JobManager {
     const chunkPath =
       path.join(
         session.dir,
-        `chunk-${String(chunkIndex).padStart(8, '0')}`
+        `chunk-${String(
+          chunkIndex
+        ).padStart(
+          8,
+          '0'
+        )}`
       );
 
     /*
-     * Re-uploading the same chunk is allowed.
-     * This makes retrying a failed request safe.
+     * Re-uploading the same chunk
+     * is intentionally allowed.
      */
     await fsp.writeFile(
       chunkPath,
@@ -470,10 +582,16 @@ class JobManager {
             session.received.size /
             session.totalChunks
           ) *
-          100
+            100
         )
     };
   }
+
+  /*
+   * ==========================================================
+   * COMPLETE CHUNK UPLOAD
+   * ==========================================================
+   */
 
   async completeUpload(
     uploadId,
@@ -497,7 +615,13 @@ class JobManager {
           session.completePath,
 
         size:
-          session.size
+          session.size,
+
+        filename:
+          session.filename,
+
+        mimeType:
+          session.mimeType
       };
     }
 
@@ -507,7 +631,9 @@ class JobManager {
     ) {
       throw new ValidationError(
         'UPLOAD_INCOMPLETE',
+
         `Upload is incomplete. Received ${session.received.size} of ${session.totalChunks} chunks.`,
+
         409
       );
     }
@@ -518,24 +644,33 @@ class JobManager {
         `${session.id}-${session.filename}`
       );
 
-    const handle =
-      await fsp.open(
-        finalPath,
-        'w'
-      );
+    let handle = null;
 
     try {
-      let totalWritten = 0;
+      handle =
+        await fsp.open(
+          finalPath,
+          'w'
+        );
+
+      let totalWritten =
+        0;
 
       for (
         let i = 0;
-        i < session.totalChunks;
+        i <
+        session.totalChunks;
         i++
       ) {
         const chunkPath =
           path.join(
             session.dir,
-            `chunk-${String(i).padStart(8, '0')}`
+            `chunk-${String(
+              i
+            ).padStart(
+              8,
+              '0'
+            )}`
           );
 
         const data =
@@ -557,7 +692,9 @@ class JobManager {
       ) {
         throw new ValidationError(
           'UPLOAD_SIZE_MISMATCH',
+
           'The completed upload size does not match the original file.',
+
           400
         );
       }
@@ -571,18 +708,6 @@ class JobManager {
       session.updatedAt =
         Date.now();
 
-      /*
-       * Chunks are no longer needed after
-       * the final file has been assembled.
-       */
-      await fsp.rm(
-        session.dir,
-        {
-          recursive: true,
-          force: true
-        }
-      );
-
       return {
         uploadId:
           session.id,
@@ -594,12 +719,55 @@ class JobManager {
           totalWritten,
 
         filename:
-          session.filename
+          session.filename,
+
+        mimeType:
+          session.mimeType
       };
+    } catch (e) {
+      await fsp.rm(
+        finalPath,
+        {
+          force: true
+        }
+      ).catch(
+        () => {}
+      );
+
+      throw e;
     } finally {
-      await handle.close();
+      if (handle) {
+        await handle.close()
+          .catch(
+            () => {}
+          );
+      }
+
+      /*
+       * Chunks are removed only after
+       * the final file has been closed.
+       */
+      if (
+        session.completed
+      ) {
+        await fsp.rm(
+          session.dir,
+          {
+            recursive: true,
+            force: true
+          }
+        ).catch(
+          () => {}
+        );
+      }
     }
   }
+
+  /*
+   * ==========================================================
+   * CANCEL UPLOAD
+   * ==========================================================
+   */
 
   async cancelUpload(
     uploadId,
@@ -617,7 +785,9 @@ class JobManager {
         recursive: true,
         force: true
       }
-    ).catch(() => {});
+    ).catch(
+      () => {}
+    );
 
     if (
       session.completePath
@@ -627,7 +797,9 @@ class JobManager {
         {
           force: true
         }
-      ).catch(() => {});
+      ).catch(
+        () => {}
+      );
     }
 
     this.uploadSessions.delete(
@@ -670,7 +842,9 @@ class JobManager {
     ) {
       throw new ValidationError(
         'SERVER_BUSY',
+
         'The server is busy. Please try again in a few minutes.',
+
         503
       );
     }
@@ -717,27 +891,46 @@ class JobManager {
         token:
           crypto
             .randomBytes(24)
-            .toString('base64url'),
+            .toString(
+              'base64url'
+            ),
 
-        status: 'queued',
-        stage: 'queued',
-        progress: 0,
-        currentClip: 0,
+        status:
+          'queued',
+
+        stage:
+          'queued',
+
+        progress:
+          0,
+
+        currentClip:
+          0,
 
         mode,
+
         options,
 
         aiRequested:
-          Boolean(aiRequested),
+          Boolean(
+            aiRequested
+          ),
 
-        aiUsed: false,
-        aiAnalysis: null,
+        aiUsed:
+          false,
+
+        aiAnalysis:
+          null,
 
         clips:
           (clips || []).map(
             (c, i) => ({
-              index: i + 1,
-              startSec: c.startSec,
+              index:
+                i + 1,
+
+              startSec:
+                c.startSec,
+
               durationSec:
                 c.durationSec
             })
@@ -751,22 +944,36 @@ class JobManager {
         source: {
           durationSec:
             Math.round(
-              source.durationSec * 100
+              source.durationSec *
+                100
             ) / 100,
 
-          width: source.width,
-          height: source.height
+          width:
+            source.width,
+
+          height:
+            source.height
         },
 
-        createdAt: now,
-        updatedAt: now,
-        finishedAt: null,
+        createdAt:
+          now,
 
-        error: null,
-        errorCode: null,
+        updatedAt:
+          now,
+
+        finishedAt:
+          null,
+
+        error:
+          null,
+
+        errorCode:
+          null,
 
         dir,
-        inputPath: input
+
+        inputPath:
+          input
       };
 
       this.jobs.set(
@@ -774,10 +981,13 @@ class JobManager {
         job
       );
 
-      this.queue.push(id);
+      this.queue.push(
+        id
+      );
 
       setImmediate(
-        () => this.pump()
+        () =>
+          this.pump()
       );
 
       return job;
@@ -788,7 +998,9 @@ class JobManager {
           recursive: true,
           force: true
         }
-      ).catch(() => {});
+      ).catch(
+        () => {}
+      );
 
       throw e;
     } finally {
@@ -796,19 +1008,30 @@ class JobManager {
     }
   }
 
+  /*
+   * ==========================================================
+   * QUEUE PUMP
+   * ==========================================================
+   */
+
   pump() {
     while (
       this.running <
-        this.cfg.maxConcurrentJobs &&
+        this.cfg
+          .maxConcurrentJobs &&
       this.queue.length
     ) {
       const id =
         this.queue.shift();
 
       const job =
-        this.jobs.get(id);
+        this.jobs.get(
+          id
+        );
 
-      if (!job) continue;
+      if (!job) {
+        continue;
+      }
 
       this.running++;
 
@@ -817,30 +1040,44 @@ class JobManager {
           (e) =>
             this.log.error(
               '[job] unexpected:',
-              e && e.message
+              e &&
+                e.message
             )
         )
-        .finally(() => {
-          this.running--;
-          this.pump();
-        });
+        .finally(
+          () => {
+            this.running--;
+            this.pump();
+          }
+        );
     }
   }
+
+  /*
+   * ==========================================================
+   * RUN JOB
+   * ==========================================================
+   */
 
   async run(job) {
     const deadline =
       Date.now() +
-      this.cfg.processTimeoutMs;
+      this.cfg
+        .processTimeoutMs;
 
-    job.status = 'processing';
+    job.status =
+      'processing';
 
     job.stage =
       job.aiRequested
         ? 'ai-analysis'
         : 'encoding';
 
-    job.progress = 1;
-    job.updatedAt = Date.now();
+    job.progress =
+      1;
+
+    job.updatedAt =
+      Date.now();
 
     try {
       /*
@@ -854,13 +1091,19 @@ class JobManager {
         this.ai
       ) {
         const remaining =
-          deadline - Date.now();
+          deadline -
+          Date.now();
 
-        if (remaining <= 0) {
+        if (
+          remaining <= 0
+        ) {
           const e =
-            new Error('timeout');
+            new Error(
+              'timeout'
+            );
 
-          e.code = 'TIMEOUT';
+          e.code =
+            'TIMEOUT';
 
           throw e;
         }
@@ -876,20 +1119,25 @@ class JobManager {
                 job.inputPath,
 
               durationSec:
-                job.source.durationSec,
+                job.source
+                  .durationSec,
 
               clipCount:
-                job.options.clipCount ||
+                job.options
+                  .clipCount ||
                 job.clips.length ||
                 3,
 
               clipDurationSec:
-                job.options.durationSec ||
+                job.options
+                  .durationSec ||
                 30
             });
 
           if (
-            !Array.isArray(highlights) ||
+            !Array.isArray(
+              highlights
+            ) ||
             !highlights.length
           ) {
             throw new Error(
@@ -900,12 +1148,20 @@ class JobManager {
           job.clips =
             highlights.map(
               (h, i) => ({
-                index: i + 1,
-                startSec: h.startSec,
+                index:
+                  i + 1,
+
+                startSec:
+                  h.startSec,
+
                 durationSec:
                   h.durationSec,
-                score: h.score,
-                reason: h.reason
+
+                score:
+                  h.score,
+
+                reason:
+                  h.reason
               })
             );
 
@@ -916,40 +1172,56 @@ class JobManager {
             highlights:
               job.clips.map(
                 (c) => ({
-                  index: c.index,
+                  index:
+                    c.index,
+
                   startSec:
                     c.startSec,
+
                   durationSec:
                     c.durationSec,
+
                   score:
                     c.score,
+
                   reason:
                     c.reason
                 })
               )
           };
 
-          job.aiUsed = true;
+          job.aiUsed =
+            true;
+
           job.mode =
             'ai-highlights';
 
-          job.stage = 'encoding';
-          job.progress = 5;
+          job.stage =
+            'encoding';
+
+          job.progress =
+            5;
+
           job.updatedAt =
             Date.now();
 
           this.log.log(
             `[job ${job.id}] AI selected ${job.clips.length} highlights`
           );
-        } catch (aiError) {
+        } catch (
+          aiError
+        ) {
           this.log.error(
             `[job ${job.id}] AI analysis failed:`,
             aiError &&
               aiError.message
           );
 
-          job.aiUsed = false;
-          job.aiAnalysis = null;
+          job.aiUsed =
+            false;
+
+          job.aiAnalysis =
+            null;
 
           job.warnings.push(
             'AI highlight detection was unavailable. Basic interval clips were generated instead.'
@@ -961,7 +1233,9 @@ class JobManager {
           job.stage =
             'encoding';
 
-          job.progress = 2;
+          job.progress =
+            2;
+
           job.updatedAt =
             Date.now();
         }
@@ -992,13 +1266,19 @@ class JobManager {
         const clip of job.clips
       ) {
         const remaining =
-          deadline - Date.now();
+          deadline -
+          Date.now();
 
-        if (remaining <= 0) {
+        if (
+          remaining <= 0
+        ) {
           const e =
-            new Error('timeout');
+            new Error(
+              'timeout'
+            );
 
-          e.code = 'TIMEOUT';
+          e.code =
+            'TIMEOUT';
 
           throw e;
         }
@@ -1016,67 +1296,71 @@ class JobManager {
           `clip-${clip.index}.mp4`;
 
         const result =
-          await this.ffmpeg.transcodeClip({
-            input:
-              job.inputPath,
+          await this.ffmpeg
+            .transcodeClip({
+              input:
+                job.inputPath,
 
-            output:
-              path.join(
-                job.dir,
-                name
-              ),
+              output:
+                path.join(
+                  job.dir,
+                  name
+                ),
 
-            startSec:
-              clip.startSec,
+              startSec:
+                clip.startSec,
 
-            durationSec:
-              clip.durationSec,
+              durationSec:
+                clip.durationSec,
 
-            width:
-              job.options.width,
+              width:
+                job.options.width,
 
-            height:
-              job.options.height,
+              height:
+                job.options.height,
 
-            timeoutMs:
-              remaining,
+              timeoutMs:
+                remaining,
 
-            onProgress:
-              (frac) => {
-                const p =
-                  Math.min(
-                    99,
-                    Math.round(
-                      (
+              onProgress:
+                (frac) => {
+                  const p =
+                    Math.min(
+                      99,
+
+                      Math.round(
                         (
-                          clip.index -
-                          1 +
-                          frac
-                        ) /
-                        total
-                      ) *
-                        94 +
-                        5
-                    )
-                  );
+                          (
+                            clip.index -
+                            1 +
+                            frac
+                          ) /
+                          total
+                        ) *
+                          94 +
+                          5
+                      )
+                    );
 
-                if (
-                  p >
-                  job.progress
-                ) {
-                  job.progress = p;
+                  if (
+                    p >
+                    job.progress
+                  ) {
+                    job.progress =
+                      p;
+                  }
+
+                  job.updatedAt =
+                    Date.now();
                 }
-
-                job.updatedAt =
-                  Date.now();
-              }
-          });
+            });
 
         job.outputs.push({
           index:
             clip.index,
 
-          file: name,
+          file:
+            name,
 
           startSec:
             clip.startSec,
@@ -1097,7 +1381,8 @@ class JobManager {
       job.stage =
         'done';
 
-      job.progress = 100;
+      job.progress =
+        100;
 
       job.finishedAt =
         Date.now();
@@ -1105,18 +1390,32 @@ class JobManager {
       job.updatedAt =
         job.finishedAt;
     } catch (e) {
-      await this.fail(job, e);
+      await this.fail(
+        job,
+        e
+      );
     } finally {
       await fsp.rm(
         job.inputPath,
         {
           force: true
         }
-      ).catch(() => {});
+      ).catch(
+        () => {}
+      );
     }
   }
 
-  async fail(job, e) {
+  /*
+   * ==========================================================
+   * FAIL JOB
+   * ==========================================================
+   */
+
+  async fail(
+    job,
+    e
+  ) {
     this.log.error(
       `[job ${job.id}] failed: ${
         e && e.code
@@ -1131,5 +1430,497 @@ class JobManager {
         ? e.code
         : 'PROCESSING_FAILED';
 
-    job.status = 'failed';
-    jo
+    job.status =
+      'failed';
+
+    job.stage =
+      'failed';
+
+    job.errorCode =
+      code;
+
+    job.error =
+      ERROR_TEXT[code] ||
+      'Video processing failed unexpectedly.';
+
+    job.outputs =
+      [];
+
+    job.finishedAt =
+      Date.now();
+
+    job.updatedAt =
+      job.finishedAt;
+
+    const files =
+      await fsp
+        .readdir(
+          job.dir
+        )
+        .catch(
+          () => []
+        );
+
+    await Promise.all(
+      files
+        .filter(
+          (f) =>
+            f.startsWith(
+              'clip-'
+            )
+        )
+        .map(
+          (f) =>
+            fsp
+              .rm(
+                path.join(
+                  job.dir,
+                  f
+                ),
+                {
+                  force:
+                    true
+                }
+              )
+              .catch(
+                () => {}
+              )
+        )
+    );
+  }
+
+  /*
+   * ==========================================================
+   * AUTHORIZED JOB
+   * ==========================================================
+   */
+
+  getAuthorized(
+    id,
+    token
+  ) {
+    if (
+      !UUID_RE.test(
+        String(id)
+      )
+    ) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Job not found.',
+        404
+      );
+    }
+
+    if (!token) {
+      throw new ValidationError(
+        'TOKEN_REQUIRED',
+        'Job token is required.',
+        401
+      );
+    }
+
+    const job =
+      this.jobs.get(
+        String(id)
+      );
+
+    if (
+      !job ||
+      !safeEqual(
+        job.token,
+        token
+      )
+    ) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Job not found.',
+        404
+      );
+    }
+
+    return job;
+  }
+
+  /*
+   * ==========================================================
+   * STATUS VIEW
+   * ==========================================================
+   */
+
+  statusView(
+    job
+  ) {
+    let queuePosition =
+      0;
+
+    if (
+      job.status ===
+      'queued'
+    ) {
+      const index =
+        this.queue.indexOf(
+          job.id
+        );
+
+      queuePosition =
+        index >= 0
+          ? index + 1
+          : 0;
+    }
+
+    const expiresAt =
+      job.finishedAt
+        ? new Date(
+            job.finishedAt +
+              this.cfg
+                .jobTtlMs
+          ).toISOString()
+        : null;
+
+    return {
+      jobId:
+        job.id,
+
+      status:
+        job.status,
+
+      stage:
+        job.stage,
+
+      progress:
+        job.progress,
+
+      currentClip:
+        job.currentClip,
+
+      clipCount:
+        job.clips.length,
+
+      mode:
+        job.mode,
+
+      ai:
+        Boolean(
+          job.aiUsed
+        ),
+
+      aiRequested:
+        Boolean(
+          job.aiRequested
+        ),
+
+      aiAnalysis:
+        job.aiAnalysis,
+
+      source:
+        job.source,
+
+      warnings:
+        job.warnings,
+
+      createdAt:
+        new Date(
+          job.createdAt
+        ).toISOString(),
+
+      updatedAt:
+        new Date(
+          job.updatedAt
+        ).toISOString(),
+
+      expiresAt,
+
+      queuePosition,
+
+      ...(job.status ===
+      'failed'
+        ? {
+            error:
+              job.error,
+
+            errorCode:
+              job.errorCode
+          }
+        : {})
+    };
+  }
+
+  /*
+   * ==========================================================
+   * RESULT VIEW
+   * ==========================================================
+   */
+
+  resultView(
+    job,
+    baseUrl
+  ) {
+    const clips =
+      job.outputs.map(
+        (output) => {
+          const index =
+            output.index;
+
+          const url =
+            `${baseUrl}/api/shorts/download/` +
+            `${job.id}/${index}?token=` +
+            encodeURIComponent(
+              job.token
+            );
+
+          return {
+            index,
+
+            startSec:
+              output.startSec,
+
+            endSec:
+              output.startSec +
+              output.durationSec,
+
+            durationSec:
+              output.durationSec,
+
+            width:
+              output.width,
+
+            height:
+              output.height,
+
+            sizeBytes:
+              output.sizeBytes,
+
+            score:
+              output.score,
+
+            reason:
+              output.reason,
+
+            previewUrl:
+              url,
+
+            downloadUrl:
+              `${url}&download=1`
+          };
+        }
+      );
+
+    const expiresAt =
+      job.finishedAt
+        ? new Date(
+            job.finishedAt +
+              this.cfg
+                .jobTtlMs
+          ).toISOString()
+        : null;
+
+    return {
+      jobId:
+        job.id,
+
+      status:
+        job.status,
+
+      mode:
+        job.mode,
+
+      ai:
+        Boolean(
+          job.aiUsed
+        ),
+
+      aiRequested:
+        Boolean(
+          job.aiRequested
+        ),
+
+      aiAnalysis:
+        job.aiAnalysis,
+
+      warnings:
+        job.warnings,
+
+      expiresAt,
+
+      clips
+    };
+  }
+
+  /*
+   * ==========================================================
+   * GET CLIP FILE
+   * ==========================================================
+   */
+
+  fileFor(
+    job,
+    index
+  ) {
+    const output =
+      job.outputs.find(
+        (o) =>
+          Number(
+            o.index
+          ) ===
+          Number(index)
+      );
+
+    if (!output) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Clip not found.',
+        404
+      );
+    }
+
+    const name =
+      path.basename(
+        output.file
+      );
+
+    if (
+      name !==
+      `clip-${Number(index)}.mp4`
+    ) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Clip not found.',
+        404
+      );
+    }
+
+    return {
+      root:
+        job.dir,
+
+      name
+    };
+  }
+
+  /*
+   * ==========================================================
+   * CLEANUP
+   * ==========================================================
+   */
+
+  async cleanup() {
+    const now =
+      Date.now();
+
+    /*
+     * Clean completed jobs.
+     */
+
+    for (
+      const [
+        id,
+        job
+      ] of this.jobs
+    ) {
+      if (
+        !job.finishedAt
+      ) {
+        continue;
+      }
+
+      if (
+        now -
+          job.finishedAt <
+        this.cfg.jobTtlMs
+      ) {
+        continue;
+      }
+
+      try {
+        await fsp.rm(
+          job.dir,
+          {
+            recursive:
+              true,
+
+            force:
+              true
+          }
+        );
+
+        this.jobs.delete(
+          id
+        );
+
+        this.log.log(
+          `[cleanup] removed job ${id}`
+        );
+      } catch (e) {
+        this.log.error(
+          `[cleanup] failed for ${id}:`,
+          e.message
+        );
+      }
+    }
+
+    /*
+     * Clean abandoned upload sessions.
+     */
+
+    for (
+      const [
+        id,
+        session
+      ] of this
+        .uploadSessions
+    ) {
+      if (
+        now -
+          session.updatedAt <
+        this.cfg.jobTtlMs
+      ) {
+        continue;
+      }
+
+      try {
+        await fsp.rm(
+          session.dir,
+          {
+            recursive:
+              true,
+
+            force:
+              true
+          }
+        );
+
+        if (
+          session.completePath
+        ) {
+          await fsp.rm(
+            session.completePath,
+            {
+              force:
+                true
+            }
+          ).catch(
+            () => {}
+          );
+        }
+
+        this.uploadSessions.delete(
+          id
+        );
+
+        this.log.log(
+          `[cleanup] removed upload session ${id}`
+        );
+      } catch (e) {
+        this.log.error(
+          `[cleanup] failed upload session ${id}:`,
+          e.message
+        );
+      }
+    }
+  }
+}
+
+module.exports = {
+  JobManager,
+  CHUNK_SIZE
+};
