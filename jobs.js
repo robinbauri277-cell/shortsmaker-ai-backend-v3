@@ -62,12 +62,6 @@ class JobManager {
     );
 
     this.timer = null;
-
-    /*
-     * Gemini AI analyzer.
-     *
-     * It is created once and reused by jobs.
-     */
     this.ai = null;
 
     if (
@@ -75,11 +69,10 @@ class JobManager {
       cfg.geminiApiKey
     ) {
       try {
-        this.ai =
-          createAIHighlights(
-            cfg,
-            logger
-          );
+        this.ai = createAIHighlights(
+          cfg,
+          logger
+        );
 
         this.log.log(
           '[ai] Gemini highlight analyzer enabled'
@@ -126,8 +119,8 @@ class JobManager {
   }
 
   startCleanupTimer() {
-    this.timer =
-      setInterval(() => {
+    this.timer = setInterval(
+      () => {
         this.cleanup().catch(
           (e) =>
             this.log.error(
@@ -135,7 +128,9 @@ class JobManager {
               e.message
             )
         );
-      }, this.cfg.cleanupIntervalMs);
+      },
+      this.cfg.cleanupIntervalMs
+    );
 
     this.timer.unref();
   }
@@ -143,6 +138,7 @@ class JobManager {
   stop() {
     if (this.timer) {
       clearInterval(this.timer);
+      this.timer = null;
     }
   }
 
@@ -219,11 +215,9 @@ class JobManager {
         id,
 
         token:
-          crypto.randomBytes(
-            24
-          ).toString(
-            'base64url'
-          ),
+          crypto
+            .randomBytes(24)
+            .toString('base64url'),
 
         status: 'queued',
         stage: 'queued',
@@ -231,37 +225,23 @@ class JobManager {
         currentClip: 0,
 
         mode,
-
         options,
 
-        /*
-         * AI requested for this job.
-         */
         aiRequested:
-          Boolean(
-            aiRequested
-          ),
+          Boolean(aiRequested),
 
-        /*
-         * Becomes true only after
-         * Gemini successfully returns
-         * usable highlights.
-         */
         aiUsed: false,
-
         aiAnalysis: null,
 
-        clips: (
-          clips || []
-        ).map(
-          (c, i) => ({
-            index: i + 1,
-            startSec:
-              c.startSec,
-            durationSec:
-              c.durationSec
-          })
-        ),
+        clips:
+          (clips || []).map(
+            (c, i) => ({
+              index: i + 1,
+              startSec: c.startSec,
+              durationSec:
+                c.durationSec
+            })
+          ),
 
         outputs: [],
 
@@ -271,15 +251,11 @@ class JobManager {
         source: {
           durationSec:
             Math.round(
-              source.durationSec *
-                100
+              source.durationSec * 100
             ) / 100,
 
-          width:
-            source.width,
-
-          height:
-            source.height
+          width: source.width,
+          height: source.height
         },
 
         createdAt: now,
@@ -298,9 +274,7 @@ class JobManager {
         job
       );
 
-      this.queue.push(
-        id
-      );
+      this.queue.push(id);
 
       setImmediate(
         () => this.pump()
@@ -328,14 +302,13 @@ class JobManager {
         this.cfg.maxConcurrentJobs &&
       this.queue.length
     ) {
-      const job =
-        this.jobs.get(
-          this.queue.shift()
-        );
+      const id =
+        this.queue.shift();
 
-      if (!job) {
-        continue;
-      }
+      const job =
+        this.jobs.get(id);
+
+      if (!job) continue;
 
       this.running++;
 
@@ -344,8 +317,7 @@ class JobManager {
           (e) =>
             this.log.error(
               '[job] unexpected:',
-              e &&
-                e.message
+              e && e.message
             )
         )
         .finally(() => {
@@ -360,8 +332,7 @@ class JobManager {
       Date.now() +
       this.cfg.processTimeoutMs;
 
-    job.status =
-      'processing';
+    job.status = 'processing';
 
     job.stage =
       job.aiRequested
@@ -369,15 +340,13 @@ class JobManager {
         : 'encoding';
 
     job.progress = 1;
-
-    job.updatedAt =
-      Date.now();
+    job.updatedAt = Date.now();
 
     try {
       /*
-       * =====================================
+       * ==============================
        * AI HIGHLIGHT DETECTION
-       * =====================================
+       * ==============================
        */
 
       if (
@@ -385,17 +354,13 @@ class JobManager {
         this.ai
       ) {
         const remaining =
-          deadline -
-          Date.now();
+          deadline - Date.now();
 
         if (remaining <= 0) {
           const e =
-            new Error(
-              'timeout'
-            );
+            new Error('timeout');
 
-          e.code =
-            'TIMEOUT';
+          e.code = 'TIMEOUT';
 
           throw e;
         }
@@ -406,32 +371,25 @@ class JobManager {
 
         try {
           const highlights =
-            await this.ai.analyzeVideo(
-              {
-                inputPath:
-                  job.inputPath,
+            await this.ai.analyzeVideo({
+              inputPath:
+                job.inputPath,
 
-                durationSec:
-                  job.source
-                    .durationSec,
+              durationSec:
+                job.source.durationSec,
 
-                clipCount:
-                  job.options
-                    .clipCount ||
-                  job.clips.length ||
-                  3,
+              clipCount:
+                job.options.clipCount ||
+                job.clips.length ||
+                3,
 
-                clipDurationSec:
-                  job.options
-                    .durationSec ||
-                  30
-              }
-            );
+              clipDurationSec:
+                job.options.durationSec ||
+                30
+            });
 
           if (
-            !Array.isArray(
-              highlights
-            ) ||
+            !Array.isArray(highlights) ||
             !highlights.length
           ) {
             throw new Error(
@@ -439,27 +397,15 @@ class JobManager {
             );
           }
 
-          /*
-           * Replace the basic interval
-           * clips with AI-selected clips.
-           */
           job.clips =
             highlights.map(
               (h, i) => ({
-                index:
-                  i + 1,
-
-                startSec:
-                  h.startSec,
-
+                index: i + 1,
+                startSec: h.startSec,
                 durationSec:
                   h.durationSec,
-
-                score:
-                  h.score,
-
-                reason:
-                  h.reason
+                score: h.score,
+                reason: h.reason
               })
             );
 
@@ -470,35 +416,23 @@ class JobManager {
             highlights:
               job.clips.map(
                 (c) => ({
-                  index:
-                    c.index,
-
+                  index: c.index,
                   startSec:
                     c.startSec,
-
                   durationSec:
                     c.durationSec,
-
-                  score:
-                    c.score,
-
-                  reason:
-                    c.reason
+                  score: c.score,
+                  reason: c.reason
                 })
               )
           };
 
-          job.aiUsed =
-            true;
-
+          job.aiUsed = true;
           job.mode =
             'ai-highlights';
 
-          job.stage =
-            'encoding';
-
+          job.stage = 'encoding';
           job.progress = 5;
-
           job.updatedAt =
             Date.now();
 
@@ -506,24 +440,14 @@ class JobManager {
             `[job ${job.id}] AI selected ${job.clips.length} highlights`
           );
         } catch (aiError) {
-          /*
-           * Do NOT destroy the user's job
-           * if Gemini temporarily fails.
-           *
-           * Fall back to the already-created
-           * basic interval clips.
-           */
           this.log.error(
             `[job ${job.id}] AI analysis failed:`,
             aiError &&
               aiError.message
           );
 
-          job.aiUsed =
-            false;
-
-          job.aiAnalysis =
-            null;
+          job.aiUsed = false;
+          job.aiAnalysis = null;
 
           job.warnings.push(
             'AI highlight detection was unavailable. Basic interval clips were generated instead.'
@@ -536,16 +460,15 @@ class JobManager {
             'encoding';
 
           job.progress = 2;
-
           job.updatedAt =
             Date.now();
         }
       }
 
       /*
-       * =====================================
-       * FFmpeg CLIP GENERATION
-       * =====================================
+       * ==============================
+       * FFMPEG CLIP GENERATION
+       * ==============================
        */
 
       const total =
@@ -567,19 +490,13 @@ class JobManager {
         const clip of job.clips
       ) {
         const remaining =
-          deadline -
-          Date.now();
+          deadline - Date.now();
 
-        if (
-          remaining <= 0
-        ) {
+        if (remaining <= 0) {
           const e =
-            new Error(
-              'timeout'
-            );
+            new Error('timeout');
 
-          e.code =
-            'TIMEOUT';
+          e.code = 'TIMEOUT';
 
           throw e;
         }
@@ -597,93 +514,80 @@ class JobManager {
           `clip-${clip.index}.mp4`;
 
         const result =
-          await this.ffmpeg.transcodeClip(
-            {
-              input:
-                job.inputPath,
+          await this.ffmpeg.transcodeClip({
+            input:
+              job.inputPath,
 
-              output:
-                path.join(
-                  job.dir,
-                  name
-                ),
-
-              startSec:
-                clip.startSec,
-
-              durationSec:
-                clip.durationSec,
-
-              width:
-                job.options.width,
-
-              height:
-                job.options.height,
-
-              timeoutMs:
-                remaining,
-
-              onProgress:
-                (frac) => {
-                  const p =
-                    Math.min(
-                      99,
-
-                      Math.round(
-                        (
-                          (
-                            clip.index -
-                            1 +
-                            frac
-                          ) /
-                          total
-                        ) *
-                          94 +
-                          5
-                      )
-                    );
-
-                  if (
-                    p >
-                    job.progress
-                  ) {
-                    job.progress =
-                      p;
-                  }
-
-                  job.updatedAt =
-                    Date.now();
-                }
-            }
-          );
-
-        job.outputs.push(
-          {
-            index:
-              clip.index,
-
-            file:
-              name,
+            output:
+              path.join(
+                job.dir,
+                name
+              ),
 
             startSec:
               clip.startSec,
 
-            score:
-              clip.score,
+            durationSec:
+              clip.durationSec,
 
-            reason:
-              clip.reason,
+            width:
+              job.options.width,
 
-            ...result
-          }
-        );
+            height:
+              job.options.height,
+
+            timeoutMs:
+              remaining,
+
+            onProgress:
+              (frac) => {
+                const p =
+                  Math.min(
+                    99,
+                    Math.round(
+                      (
+                        (
+                          clip.index -
+                          1 +
+                          frac
+                        ) /
+                        total
+                      ) *
+                        94 +
+                        5
+                    )
+                  );
+
+                if (
+                  p >
+                  job.progress
+                ) {
+                  job.progress = p;
+                }
+
+                job.updatedAt =
+                  Date.now();
+              }
+          });
+
+        job.outputs.push({
+          index:
+            clip.index,
+
+          file: name,
+
+          startSec:
+            clip.startSec,
+
+          score:
+            clip.score,
+
+          reason:
+            clip.reason,
+
+          ...result
+        });
       }
-
-      /*
-       * =====================================
-       * COMPLETE
-       * =====================================
-       */
 
       job.status =
         'completed';
@@ -691,8 +595,7 @@ class JobManager {
       job.stage =
         'done';
 
-      job.progress =
-        100;
+      job.progress = 100;
 
       job.finishedAt =
         Date.now();
@@ -700,10 +603,7 @@ class JobManager {
       job.updatedAt =
         job.finishedAt;
     } catch (e) {
-      await this.fail(
-        job,
-        e
-      );
+      await this.fail(job, e);
     } finally {
       await fsp.rm(
         job.inputPath,
@@ -720,13 +620,6 @@ class JobManager {
         e && e.code
       } ${
         e && e.message
-      } ${
-        e && e.detail
-          ? '| ' +
-            String(
-              e.detail
-            ).slice(-400)
-          : ''
       }`
     );
 
@@ -736,21 +629,16 @@ class JobManager {
         ? e.code
         : 'PROCESSING_FAILED';
 
-    job.status =
-      'failed';
+    job.status = 'failed';
+    job.stage = 'failed';
 
-    job.stage =
-      'failed';
-
-    job.errorCode =
-      code;
+    job.errorCode = code;
 
     job.error =
       ERROR_TEXT[code] ||
       'Video processing failed unexpectedly.';
 
-    job.outputs =
-      [];
+    job.outputs = [];
 
     job.finishedAt =
       Date.now();
@@ -759,33 +647,29 @@ class JobManager {
       job.finishedAt;
 
     const files =
-      await fsp.readdir(
-        job.dir
-      ).catch(
-        () => []
-      );
+      await fsp
+        .readdir(job.dir)
+        .catch(() => []);
 
     await Promise.all(
       files
         .filter(
           (f) =>
-            f.startsWith(
-              'clip-'
-            )
+            f.startsWith('clip-')
         )
         .map(
           (f) =>
-            fsp.rm(
-              path.join(
-                job.dir,
-                f
-              ),
-              {
-                force: true
-              }
-            ).catch(
-              () => {}
-            )
+            fsp
+              .rm(
+                path.join(
+                  job.dir,
+                  f
+                ),
+                {
+                  force: true
+                }
+              )
+              .catch(() => {})
         )
     );
   }
@@ -799,4 +683,312 @@ class JobManager {
         String(id)
       )
     ) {
-      throw new Validation
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Job not found.',
+        404
+      );
+    }
+
+    if (
+      !token
+    ) {
+      throw new ValidationError(
+        'TOKEN_REQUIRED',
+        'Job token is required.',
+        401
+      );
+    }
+
+    const job =
+      this.jobs.get(
+        String(id)
+      );
+
+    if (
+      !job ||
+      !safeEqual(
+        job.token,
+        token
+      )
+    ) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Job not found.',
+        404
+      );
+    }
+
+    return job;
+  }
+
+  statusView(job) {
+    let queuePosition = 0;
+
+    if (
+      job.status === 'queued'
+    ) {
+      const index =
+        this.queue.indexOf(
+          job.id
+        );
+
+      queuePosition =
+        index >= 0
+          ? index + 1
+          : 0;
+    }
+
+    const expiresAt =
+      job.finishedAt
+        ? new Date(
+            job.finishedAt +
+              this.cfg.jobTtlMs
+          ).toISOString()
+        : null;
+
+    return {
+      jobId:
+        job.id,
+
+      status:
+        job.status,
+
+      stage:
+        job.stage,
+
+      progress:
+        job.progress,
+
+      currentClip:
+        job.currentClip,
+
+      clipCount:
+        job.clips.length,
+
+      mode:
+        job.mode,
+
+      ai:
+        Boolean(job.aiUsed),
+
+      aiRequested:
+        Boolean(job.aiRequested),
+
+      aiAnalysis:
+        job.aiAnalysis,
+
+      source:
+        job.source,
+
+      warnings:
+        job.warnings,
+
+      createdAt:
+        new Date(
+          job.createdAt
+        ).toISOString(),
+
+      updatedAt:
+        new Date(
+          job.updatedAt
+        ).toISOString(),
+
+      expiresAt,
+
+      queuePosition,
+
+      ...(job.status === 'failed'
+        ? {
+            error:
+              job.error,
+
+            errorCode:
+              job.errorCode
+          }
+        : {})
+    };
+  }
+
+  resultView(
+    job,
+    baseUrl
+  ) {
+    const clips =
+      job.outputs.map(
+        (output) => {
+          const index =
+            output.index;
+
+          const url =
+            `${baseUrl}/api/shorts/download/` +
+            `${job.id}/${index}?token=` +
+            encodeURIComponent(
+              job.token
+            );
+
+          return {
+            index,
+
+            startSec:
+              output.startSec,
+
+            endSec:
+              output.startSec +
+              output.durationSec,
+
+            durationSec:
+              output.durationSec,
+
+            width:
+              output.width,
+
+            height:
+              output.height,
+
+            sizeBytes:
+              output.sizeBytes,
+
+            score:
+              output.score,
+
+            reason:
+              output.reason,
+
+            previewUrl:
+              url,
+
+            downloadUrl:
+              `${url}&download=1`
+          };
+        }
+      );
+
+    const expiresAt =
+      job.finishedAt
+        ? new Date(
+            job.finishedAt +
+              this.cfg.jobTtlMs
+          ).toISOString()
+        : null;
+
+    return {
+      jobId:
+        job.id,
+
+      status:
+        job.status,
+
+      mode:
+        job.mode,
+
+      ai:
+        Boolean(job.aiUsed),
+
+      aiRequested:
+        Boolean(job.aiRequested),
+
+      aiAnalysis:
+        job.aiAnalysis,
+
+      warnings:
+        job.warnings,
+
+      expiresAt,
+
+      clips
+    };
+  }
+
+  fileFor(
+    job,
+    index
+  ) {
+    const output =
+      job.outputs.find(
+        (o) =>
+          Number(o.index) ===
+          Number(index)
+      );
+
+    if (!output) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Clip not found.',
+        404
+      );
+    }
+
+    const name =
+      path.basename(
+        output.file
+      );
+
+    if (
+      name !==
+      `clip-${Number(index)}.mp4`
+    ) {
+      throw new ValidationError(
+        'NOT_FOUND',
+        'Clip not found.',
+        404
+      );
+    }
+
+    return {
+      root:
+        job.dir,
+
+      name
+    };
+  }
+
+  async cleanup() {
+    const now =
+      Date.now();
+
+    for (
+      const [id, job] of
+        this.jobs
+    ) {
+      if (
+        !job.finishedAt
+      ) {
+        continue;
+      }
+
+      if (
+        now -
+          job.finishedAt <
+        this.cfg.jobTtlMs
+      ) {
+        continue;
+      }
+
+      try {
+        await fsp.rm(
+          job.dir,
+          {
+            recursive: true,
+            force: true
+          }
+        );
+
+        this.jobs.delete(id);
+
+        this.log.log(
+          `[cleanup] removed job ${id}`
+        );
+      } catch (e) {
+        this.log.error(
+          `[cleanup] failed for ${id}:`,
+          e.message
+        );
+      }
+    }
+  }
+}
+
+module.exports = {
+  JobManager
+};
