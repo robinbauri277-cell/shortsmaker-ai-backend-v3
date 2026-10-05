@@ -7,7 +7,7 @@ const express = require('express');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 
-const { ValidationError } = require('./errors');
+const { ValidationError } = require('../errors');
 
 const {
   checkUploadMeta,
@@ -15,7 +15,7 @@ const {
   parseProcessOptions,
   parseTrimOptions,
   ALLOWED_EXT
-} = require('./validate');
+} = require('../validate');
 
 const wrap = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
@@ -61,6 +61,7 @@ function createShortsRouter({ config, ffmpeg, jobs }) {
 
   const upload = multer({
     storage,
+
     limits: {
       fileSize: config.maxUploadBytes,
       files: 1,
@@ -71,7 +72,11 @@ function createShortsRouter({ config, ffmpeg, jobs }) {
 
     fileFilter: (req, file, cb) => {
       try {
-        checkUploadMeta(file.originalname, file.mimetype);
+        checkUploadMeta(
+          file.originalname,
+          file.mimetype
+        );
+
         cb(null, true);
       } catch (error) {
         cb(error);
@@ -85,28 +90,34 @@ function createShortsRouter({ config, ffmpeg, jobs }) {
 
       if (error instanceof multer.MulterError) {
         if (error.code === 'LIMIT_FILE_SIZE') {
-          return next(new ValidationError(
-            'FILE_TOO_LARGE',
-            `File is too large. Maximum is ${Math.round(
-              config.maxUploadBytes / 1048576
-            )} MB.`,
-            413
-          ));
+          return next(
+            new ValidationError(
+              'FILE_TOO_LARGE',
+              `File is too large. Maximum is ${Math.round(
+                config.maxUploadBytes / 1048576
+              )} MB.`,
+              413
+            )
+          );
         }
 
         if (error.code === 'LIMIT_UNEXPECTED_FILE') {
-          return next(new ValidationError(
-            'WRONG_FIELD_NAME',
-            'The video field must be named "video".',
-            400
-          ));
+          return next(
+            new ValidationError(
+              'WRONG_FIELD_NAME',
+              'The video field must be named "video".',
+              400
+            )
+          );
         }
 
-        return next(new ValidationError(
-          'BAD_UPLOAD',
-          'The upload was malformed.',
-          400
-        ));
+        return next(
+          new ValidationError(
+            'BAD_UPLOAD',
+            'The upload was malformed.',
+            400
+          )
+        );
       }
 
       next(error);
@@ -117,7 +128,12 @@ function createShortsRouter({ config, ffmpeg, jobs }) {
     config.publicBaseUrl ||
     `${req.protocol}://${req.get('host')}`;
 
-  async function createFromUpload(req, res, parse) {
+  async function createFromUpload(
+    req,
+    res,
+    parse,
+    allowAI
+  ) {
     const file = req.file;
 
     if (!file) {
@@ -129,158 +145,309 @@ function createShortsRouter({ config, ffmpeg, jobs }) {
     }
 
     try {
-      const source = await ffmpeg.probe(file.path);
-      assertSource(source, config);
+      const source =
+        await ffmpeg.probe(file.path);
 
-      const plan = parse(req.body, source, config);
-
-      const job = await jobs.createJob({
-        inputPath: file.path,
+      assertSource(
         source,
-        ...plan
-      });
+        config
+      );
 
-      const base = baseUrl(req);
+      const plan =
+        parse(
+          req.body,
+          source,
+          config
+        );
+
+      /*
+       * AI is only requested for /process.
+       *
+       * /trim always remains manual trim.
+       *
+       * AI actually runs later inside the queued job.
+       * This keeps the upload endpoint fast and prevents
+       * the browser request from waiting for Gemini.
+       */
+      const aiRequested =
+        Boolean(
+          allowAI &&
+          config.aiHighlights &&
+          config.geminiApiKey
+        );
+
+      const job =
+        await jobs.createJob({
+          inputPath: file.path,
+          source,
+          ...plan,
+
+          aiRequested
+        });
+
+      const base =
+        baseUrl(req);
 
       res.status(202).json({
         jobId: job.id,
         accessToken: job.token,
         status: job.status,
-        mode: job.mode,
-        ai: false,
-        clipCount: job.clips.length,
-        warnings: job.warnings,
-        statusUrl: `${base}/api/shorts/status/${job.id}`,
-        resultUrl: `${base}/api/shorts/result/${job.id}`
+
+        mode:
+          aiRequested
+            ? 'ai-highlights'
+            : job.mode,
+
+        ai: aiRequested,
+
+        clipCount:
+          aiRequested
+            ? 0
+            : job.clips.length,
+
+        warnings: [
+          ...(job.warnings || []),
+
+          ...(allowAI &&
+          config.aiHighlights &&
+          !config.geminiApiKey
+            ? [
+                'AI highlights are enabled but GEMINI_API_KEY is not configured. Falling back to basic clips.'
+              ]
+            : [])
+        ],
+
+        statusUrl:
+          `${base}/api/shorts/status/${job.id}`,
+
+        resultUrl:
+          `${base}/api/shorts/result/${job.id}`
       });
     } catch (error) {
-      await fs.promises.rm(file.path, { force: true }).catch(() => {});
+      await fs.promises
+        .rm(file.path, {
+          force: true
+        })
+        .catch(() => {});
+
       throw error;
     }
   }
 
+  /*
+   * Main video processing endpoint.
+   *
+   * If AI_HIGHLIGHTS=true and GEMINI_API_KEY exists,
+   * the queued job will use Gemini highlight detection.
+   *
+   * Otherwise existing interval-basic mode remains active.
+   */
   router.post(
     '/process',
     uploadLimiter,
     handleUpload,
     wrap((req, res) =>
-      createFromUpload(req, res, parseProcessOptions)
+      createFromUpload(
+        req,
+        res,
+        parseProcessOptions,
+        true
+      )
     )
   );
 
+  /*
+   * Manual trim NEVER uses AI.
+   */
   router.post(
     '/trim',
     uploadLimiter,
     handleUpload,
     wrap((req, res) =>
-      createFromUpload(req, res, parseTrimOptions)
+      createFromUpload(
+        req,
+        res,
+        parseTrimOptions,
+        false
+      )
     )
   );
 
-  router.get('/status/:jobId', (req, res, next) => {
-    try {
-      const job = jobs.getAuthorized(
-        req.params.jobId,
-        tokenFrom(req)
-      );
+  router.get(
+    '/status/:jobId',
+    (req, res, next) => {
+      try {
+        const job =
+          jobs.getAuthorized(
+            req.params.jobId,
+            tokenFrom(req)
+          );
 
-      res.set('Cache-Control', 'no-store');
-      res.json(jobs.statusView(job));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.get('/result/:jobId', (req, res, next) => {
-    try {
-      const job = jobs.getAuthorized(
-        req.params.jobId,
-        tokenFrom(req)
-      );
-
-      res.set('Cache-Control', 'no-store');
-
-      if (job.status === 'completed') {
-        return res.json(jobs.resultView(job, baseUrl(req)));
-      }
-
-      if (job.status === 'failed') {
-        return res.status(422).json({
-          error: job.error,
-          code: 'JOB_FAILED',
-          status: 'failed',
-          errorCode: job.errorCode
-        });
-      }
-
-      return res.status(409).json({
-        error: 'The job is not finished yet.',
-        code: 'JOB_NOT_READY',
-        status: job.status,
-        progress: job.progress
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.get('/download/:jobId/:index', (req, res, next) => {
-    try {
-      const job = jobs.getAuthorized(
-        req.params.jobId,
-        tokenFrom(req)
-      );
-
-      if (job.status !== 'completed') {
-        throw new ValidationError(
-          'JOB_NOT_READY',
-          'The job is not finished yet.',
-          409
+        res.set(
+          'Cache-Control',
+          'no-store'
         );
-      }
 
-      if (!/^\d{1,3}$/.test(req.params.index)) {
-        throw new ValidationError(
-          'NOT_FOUND',
-          'Clip not found.',
-          404
+        res.json(
+          jobs.statusView(job)
         );
+      } catch (error) {
+        next(error);
       }
+    }
+  );
 
-      const index = Number(req.params.index);
-      const { root, name } = jobs.fileFor(job, index);
-      const download = req.query.download === '1';
+  router.get(
+    '/result/:jobId',
+    (req, res, next) => {
+      try {
+        const job =
+          jobs.getAuthorized(
+            req.params.jobId,
+            tokenFrom(req)
+          );
 
-      res.sendFile(
-        name,
-        {
-          root,
-          dotfiles: 'deny',
-          acceptRanges: true,
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Content-Disposition': download
-              ? `attachment; filename="shortsmaker-clip-${index}.mp4"`
-              : 'inline',
-            'Cache-Control': 'private, max-age=300'
-          }
-        },
-        (error) => {
-          if (error && !res.headersSent) {
-            next(new ValidationError(
-              'NOT_FOUND',
-              'Clip not found or expired.',
-              404
-            ));
-          }
+        res.set(
+          'Cache-Control',
+          'no-store'
+        );
+
+        if (
+          job.status ===
+          'completed'
+        ) {
+          return res.json(
+            jobs.resultView(
+              job,
+              baseUrl(req)
+            )
+          );
         }
-      );
-    } catch (error) {
-      next(error);
-    }
-  });
 
-    return router;
+        if (
+          job.status ===
+          'failed'
+        ) {
+          return res.status(422).json({
+            error: job.error,
+            code: 'JOB_FAILED',
+            status: 'failed',
+            errorCode:
+              job.errorCode
+          });
+        }
+
+        return res.status(409).json({
+          error:
+            'The job is not finished yet.',
+          code:
+            'JOB_NOT_READY',
+          status:
+            job.status,
+          progress:
+            job.progress
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  router.get(
+    '/download/:jobId/:index',
+    (req, res, next) => {
+      try {
+        const job =
+          jobs.getAuthorized(
+            req.params.jobId,
+            tokenFrom(req)
+          );
+
+        if (
+          job.status !==
+          'completed'
+        ) {
+          throw new ValidationError(
+            'JOB_NOT_READY',
+            'The job is not finished yet.',
+            409
+          );
+        }
+
+        if (
+          !/^\d{1,3}$/.test(
+            req.params.index
+          )
+        ) {
+          throw new ValidationError(
+            'NOT_FOUND',
+            'Clip not found.',
+            404
+          );
+        }
+
+        const index =
+          Number(
+            req.params.index
+          );
+
+        const {
+          root,
+          name
+        } =
+          jobs.fileFor(
+            job,
+            index
+          );
+
+        const download =
+          req.query.download === '1';
+
+        res.sendFile(
+          name,
+          {
+            root,
+            dotfiles: 'deny',
+            acceptRanges: true,
+
+            headers: {
+              'Content-Type':
+                'video/mp4',
+
+              'Content-Disposition':
+                download
+                  ? `attachment; filename="shortsmaker-clip-${index}.mp4"`
+                  : 'inline',
+
+              'Cache-Control':
+                'private, max-age=300'
+            }
+          },
+
+          (error) => {
+            if (
+              error &&
+              !res.headersSent
+            ) {
+              next(
+                new ValidationError(
+                  'NOT_FOUND',
+                  'Clip not found or expired.',
+                  404
+                )
+              );
+            }
+          }
+        );
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  return router;
 }
 
-module.exports = { createShortsRouter };
+module.exports = {
+  createShortsRouter
+};
