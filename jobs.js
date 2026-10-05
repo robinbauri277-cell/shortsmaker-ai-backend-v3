@@ -29,6 +29,14 @@ const ERROR_TEXT = {
     'AI highlight detection failed. Please try again or disable AI mode.'
 };
 
+/*
+ * Chunk upload defaults.
+ *
+ * 8 MB chunks are small enough for mobile connections while
+ * keeping the number of requests reasonable for a 500 MB file.
+ */
+const CHUNK_SIZE = 8 * 1024 * 1024;
+
 function safeEqual(a, b) {
   const x = Buffer.from(String(a));
   const y = Buffer.from(String(b));
@@ -36,6 +44,18 @@ function safeEqual(a, b) {
   return (
     x.length === y.length &&
     crypto.timingSafeEqual(x, y)
+  );
+}
+
+function safeFilename(name) {
+  const base = path.basename(String(name || 'video.mp4'));
+
+  const ext = path.extname(base).toLowerCase();
+
+  return (
+    /^[a-z0-9._-]+$/i.test(base)
+      ? base
+      : `upload${ext || '.mp4'}`
   );
 }
 
@@ -51,6 +71,11 @@ class JobManager {
     this.running = 0;
     this.reserved = 0;
 
+    /*
+     * Resumable upload sessions.
+     */
+    this.uploadSessions = new Map();
+
     this.uploadsDir = path.join(
       cfg.dataDir,
       'uploads'
@@ -59,6 +84,11 @@ class JobManager {
     this.jobsDir = path.join(
       cfg.dataDir,
       'jobs'
+    );
+
+    this.sessionsDir = path.join(
+      this.uploadsDir,
+      'sessions'
     );
 
     this.timer = null;
@@ -116,6 +146,15 @@ class JobManager {
         recursive: true
       }
     );
+
+    await fsp.mkdir(
+      this.sessionsDir,
+      {
+        recursive: true
+      }
+    );
+
+    this.uploadSessions.clear();
   }
 
   startCleanupTimer() {
@@ -145,9 +184,470 @@ class JobManager {
   stats() {
     return {
       running: this.running,
-      queued: this.queue.length
+      queued: this.queue.length,
+      uploads: this.uploadSessions.size
     };
   }
+
+  /*
+   * ==========================================================
+   * RESUMABLE UPLOAD SESSION
+   * ==========================================================
+   */
+
+  async createUploadSession({
+    filename,
+    size,
+    mimeType
+  }) {
+    const totalSize =
+      Number(size);
+
+    if (
+      !Number.isSafeInteger(totalSize) ||
+      totalSize <= 0
+    ) {
+      throw new ValidationError(
+        'BAD_UPLOAD_SIZE',
+        'Invalid upload file size.',
+        400
+      );
+    }
+
+    if (
+      totalSize >
+      this.cfg.maxUploadBytes
+    ) {
+      throw new ValidationError(
+        'FILE_TOO_LARGE',
+        `File is too large. Maximum is ${Math.round(
+          this.cfg.maxUploadBytes / 1048576
+        )} MB.`,
+        413
+      );
+    }
+
+    const id =
+      crypto.randomUUID();
+
+    const token =
+      crypto
+        .randomBytes(32)
+        .toString('base64url');
+
+    const dir =
+      path.join(
+        this.sessionsDir,
+        id
+      );
+
+    await fsp.mkdir(
+      dir,
+      {
+        recursive: true
+      }
+    );
+
+    const totalChunks =
+      Math.ceil(
+        totalSize /
+          CHUNK_SIZE
+      );
+
+    const session = {
+      id,
+
+      token,
+
+      filename:
+        safeFilename(filename),
+
+      mimeType:
+        String(mimeType || 'application/octet-stream'),
+
+      size:
+        totalSize,
+
+      chunkSize:
+        CHUNK_SIZE,
+
+      totalChunks,
+
+      received:
+        new Set(),
+
+      createdAt:
+        Date.now(),
+
+      updatedAt:
+        Date.now(),
+
+      dir,
+
+      completePath:
+        null,
+
+      completed:
+        false
+    };
+
+    this.uploadSessions.set(
+      id,
+      session
+    );
+
+    return {
+      uploadId: id,
+      uploadToken: token,
+      chunkSize: CHUNK_SIZE,
+      totalChunks,
+      size: totalSize
+    };
+  }
+
+  getUploadSession(
+    id,
+    token
+  ) {
+    if (
+      !UUID_RE.test(
+        String(id)
+      )
+    ) {
+      throw new ValidationError(
+        'UPLOAD_NOT_FOUND',
+        'Upload session not found.',
+        404
+      );
+    }
+
+    const session =
+      this.uploadSessions.get(
+        String(id)
+      );
+
+    if (!session) {
+      throw new ValidationError(
+        'UPLOAD_NOT_FOUND',
+        'Upload session not found or expired.',
+        404
+      );
+    }
+
+    if (
+      !token
+    ) {
+      throw new ValidationError(
+        'UPLOAD_TOKEN_REQUIRED',
+        'Upload token is required.',
+        401
+      );
+    }
+
+    if (
+      !safeEqual(
+        session.token,
+        token
+      )
+    ) {
+      throw new ValidationError(
+        'UPLOAD_NOT_FOUND',
+        'Upload session not found.',
+        404
+      );
+    }
+
+    return session;
+  }
+
+  async saveUploadChunk({
+    uploadId,
+    uploadToken,
+    index,
+    buffer
+  }) {
+    const session =
+      this.getUploadSession(
+        uploadId,
+        uploadToken
+      );
+
+    if (
+      session.completed
+    ) {
+      throw new ValidationError(
+        'UPLOAD_COMPLETED',
+        'This upload has already been completed.',
+        409
+      );
+    }
+
+    const chunkIndex =
+      Number(index);
+
+    if (
+      !Number.isInteger(chunkIndex) ||
+      chunkIndex < 0 ||
+      chunkIndex >= session.totalChunks
+    ) {
+      throw new ValidationError(
+        'BAD_CHUNK_INDEX',
+        'Invalid upload chunk index.',
+        400
+      );
+    }
+
+    if (
+      !Buffer.isBuffer(buffer) ||
+      buffer.length === 0
+    ) {
+      throw new ValidationError(
+        'EMPTY_CHUNK',
+        'The upload chunk is empty.',
+        400
+      );
+    }
+
+    const expectedSize =
+      chunkIndex ===
+      session.totalChunks - 1
+        ? session.size -
+          (
+            session.chunkSize *
+            chunkIndex
+          )
+        : session.chunkSize;
+
+    if (
+      buffer.length !==
+      expectedSize
+    ) {
+      throw new ValidationError(
+        'BAD_CHUNK_SIZE',
+        'Upload chunk size does not match the expected size.',
+        400
+      );
+    }
+
+    const chunkPath =
+      path.join(
+        session.dir,
+        `chunk-${String(chunkIndex).padStart(8, '0')}`
+      );
+
+    /*
+     * Re-uploading the same chunk is allowed.
+     * This makes retrying a failed request safe.
+     */
+    await fsp.writeFile(
+      chunkPath,
+      buffer
+    );
+
+    session.received.add(
+      chunkIndex
+    );
+
+    session.updatedAt =
+      Date.now();
+
+    return {
+      uploadId:
+        session.id,
+
+      chunk:
+        chunkIndex,
+
+      received:
+        session.received.size,
+
+      totalChunks:
+        session.totalChunks,
+
+      progress:
+        Math.round(
+          (
+            session.received.size /
+            session.totalChunks
+          ) *
+          100
+        )
+    };
+  }
+
+  async completeUpload(
+    uploadId,
+    uploadToken
+  ) {
+    const session =
+      this.getUploadSession(
+        uploadId,
+        uploadToken
+      );
+
+    if (
+      session.completed &&
+      session.completePath
+    ) {
+      return {
+        uploadId:
+          session.id,
+
+        path:
+          session.completePath,
+
+        size:
+          session.size
+      };
+    }
+
+    if (
+      session.received.size !==
+      session.totalChunks
+    ) {
+      throw new ValidationError(
+        'UPLOAD_INCOMPLETE',
+        `Upload is incomplete. Received ${session.received.size} of ${session.totalChunks} chunks.`,
+        409
+      );
+    }
+
+    const finalPath =
+      path.join(
+        this.uploadsDir,
+        `${session.id}-${session.filename}`
+      );
+
+    const handle =
+      await fsp.open(
+        finalPath,
+        'w'
+      );
+
+    try {
+      let totalWritten = 0;
+
+      for (
+        let i = 0;
+        i < session.totalChunks;
+        i++
+      ) {
+        const chunkPath =
+          path.join(
+            session.dir,
+            `chunk-${String(i).padStart(8, '0')}`
+          );
+
+        const data =
+          await fsp.readFile(
+            chunkPath
+          );
+
+        await handle.write(
+          data
+        );
+
+        totalWritten +=
+          data.length;
+      }
+
+      if (
+        totalWritten !==
+        session.size
+      ) {
+        throw new ValidationError(
+          'UPLOAD_SIZE_MISMATCH',
+          'The completed upload size does not match the original file.',
+          400
+        );
+      }
+
+      session.completed =
+        true;
+
+      session.completePath =
+        finalPath;
+
+      session.updatedAt =
+        Date.now();
+
+      /*
+       * Chunks are no longer needed after
+       * the final file has been assembled.
+       */
+      await fsp.rm(
+        session.dir,
+        {
+          recursive: true,
+          force: true
+        }
+      );
+
+      return {
+        uploadId:
+          session.id,
+
+        path:
+          finalPath,
+
+        size:
+          totalWritten,
+
+        filename:
+          session.filename
+      };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async cancelUpload(
+    uploadId,
+    uploadToken
+  ) {
+    const session =
+      this.getUploadSession(
+        uploadId,
+        uploadToken
+      );
+
+    await fsp.rm(
+      session.dir,
+      {
+        recursive: true,
+        force: true
+      }
+    ).catch(() => {});
+
+    if (
+      session.completePath
+    ) {
+      await fsp.rm(
+        session.completePath,
+        {
+          force: true
+        }
+      ).catch(() => {});
+    }
+
+    this.uploadSessions.delete(
+      session.id
+    );
+
+    return {
+      uploadId:
+        session.id,
+
+      cancelled:
+        true
+    };
+  }
+
+  /*
+   * ==========================================================
+   * JOB SYSTEM
+   * ==========================================================
+   */
 
   async createJob({
     inputPath,
@@ -421,8 +921,10 @@ class JobManager {
                     c.startSec,
                   durationSec:
                     c.durationSec,
-                  score: c.score,
-                  reason: c.reason
+                  score:
+                    c.score,
+                  reason:
+                    c.reason
                 })
               )
           };
@@ -630,365 +1132,4 @@ class JobManager {
         : 'PROCESSING_FAILED';
 
     job.status = 'failed';
-    job.stage = 'failed';
-
-    job.errorCode = code;
-
-    job.error =
-      ERROR_TEXT[code] ||
-      'Video processing failed unexpectedly.';
-
-    job.outputs = [];
-
-    job.finishedAt =
-      Date.now();
-
-    job.updatedAt =
-      job.finishedAt;
-
-    const files =
-      await fsp
-        .readdir(job.dir)
-        .catch(() => []);
-
-    await Promise.all(
-      files
-        .filter(
-          (f) =>
-            f.startsWith('clip-')
-        )
-        .map(
-          (f) =>
-            fsp
-              .rm(
-                path.join(
-                  job.dir,
-                  f
-                ),
-                {
-                  force: true
-                }
-              )
-              .catch(() => {})
-        )
-    );
-  }
-
-  getAuthorized(
-    id,
-    token
-  ) {
-    if (
-      !UUID_RE.test(
-        String(id)
-      )
-    ) {
-      throw new ValidationError(
-        'NOT_FOUND',
-        'Job not found.',
-        404
-      );
-    }
-
-    if (
-      !token
-    ) {
-      throw new ValidationError(
-        'TOKEN_REQUIRED',
-        'Job token is required.',
-        401
-      );
-    }
-
-    const job =
-      this.jobs.get(
-        String(id)
-      );
-
-    if (
-      !job ||
-      !safeEqual(
-        job.token,
-        token
-      )
-    ) {
-      throw new ValidationError(
-        'NOT_FOUND',
-        'Job not found.',
-        404
-      );
-    }
-
-    return job;
-  }
-
-  statusView(job) {
-    let queuePosition = 0;
-
-    if (
-      job.status === 'queued'
-    ) {
-      const index =
-        this.queue.indexOf(
-          job.id
-        );
-
-      queuePosition =
-        index >= 0
-          ? index + 1
-          : 0;
-    }
-
-    const expiresAt =
-      job.finishedAt
-        ? new Date(
-            job.finishedAt +
-              this.cfg.jobTtlMs
-          ).toISOString()
-        : null;
-
-    return {
-      jobId:
-        job.id,
-
-      status:
-        job.status,
-
-      stage:
-        job.stage,
-
-      progress:
-        job.progress,
-
-      currentClip:
-        job.currentClip,
-
-      clipCount:
-        job.clips.length,
-
-      mode:
-        job.mode,
-
-      ai:
-        Boolean(job.aiUsed),
-
-      aiRequested:
-        Boolean(job.aiRequested),
-
-      aiAnalysis:
-        job.aiAnalysis,
-
-      source:
-        job.source,
-
-      warnings:
-        job.warnings,
-
-      createdAt:
-        new Date(
-          job.createdAt
-        ).toISOString(),
-
-      updatedAt:
-        new Date(
-          job.updatedAt
-        ).toISOString(),
-
-      expiresAt,
-
-      queuePosition,
-
-      ...(job.status === 'failed'
-        ? {
-            error:
-              job.error,
-
-            errorCode:
-              job.errorCode
-          }
-        : {})
-    };
-  }
-
-  resultView(
-    job,
-    baseUrl
-  ) {
-    const clips =
-      job.outputs.map(
-        (output) => {
-          const index =
-            output.index;
-
-          const url =
-            `${baseUrl}/api/shorts/download/` +
-            `${job.id}/${index}?token=` +
-            encodeURIComponent(
-              job.token
-            );
-
-          return {
-            index,
-
-            startSec:
-              output.startSec,
-
-            endSec:
-              output.startSec +
-              output.durationSec,
-
-            durationSec:
-              output.durationSec,
-
-            width:
-              output.width,
-
-            height:
-              output.height,
-
-            sizeBytes:
-              output.sizeBytes,
-
-            score:
-              output.score,
-
-            reason:
-              output.reason,
-
-            previewUrl:
-              url,
-
-            downloadUrl:
-              `${url}&download=1`
-          };
-        }
-      );
-
-    const expiresAt =
-      job.finishedAt
-        ? new Date(
-            job.finishedAt +
-              this.cfg.jobTtlMs
-          ).toISOString()
-        : null;
-
-    return {
-      jobId:
-        job.id,
-
-      status:
-        job.status,
-
-      mode:
-        job.mode,
-
-      ai:
-        Boolean(job.aiUsed),
-
-      aiRequested:
-        Boolean(job.aiRequested),
-
-      aiAnalysis:
-        job.aiAnalysis,
-
-      warnings:
-        job.warnings,
-
-      expiresAt,
-
-      clips
-    };
-  }
-
-  fileFor(
-    job,
-    index
-  ) {
-    const output =
-      job.outputs.find(
-        (o) =>
-          Number(o.index) ===
-          Number(index)
-      );
-
-    if (!output) {
-      throw new ValidationError(
-        'NOT_FOUND',
-        'Clip not found.',
-        404
-      );
-    }
-
-    const name =
-      path.basename(
-        output.file
-      );
-
-    if (
-      name !==
-      `clip-${Number(index)}.mp4`
-    ) {
-      throw new ValidationError(
-        'NOT_FOUND',
-        'Clip not found.',
-        404
-      );
-    }
-
-    return {
-      root:
-        job.dir,
-
-      name
-    };
-  }
-
-  async cleanup() {
-    const now =
-      Date.now();
-
-    for (
-      const [id, job] of
-        this.jobs
-    ) {
-      if (
-        !job.finishedAt
-      ) {
-        continue;
-      }
-
-      if (
-        now -
-          job.finishedAt <
-        this.cfg.jobTtlMs
-      ) {
-        continue;
-      }
-
-      try {
-        await fsp.rm(
-          job.dir,
-          {
-            recursive: true,
-            force: true
-          }
-        );
-
-        this.jobs.delete(id);
-
-        this.log.log(
-          `[cleanup] removed job ${id}`
-        );
-      } catch (e) {
-        this.log.error(
-          `[cleanup] failed for ${id}:`,
-          e.message
-        );
-      }
-    }
-  }
-}
-
-module.exports = {
-  JobManager
-};
+    jo
