@@ -5,7 +5,11 @@ const path = require('path');
 
 function int(value, def, min, max) {
   const n = Number.parseInt(value, 10);
-  if (!Number.isFinite(n)) return def;
+
+  if (!Number.isFinite(n)) {
+    return def;
+  }
+
   return Math.min(
     max === undefined ? n : max,
     Math.max(min === undefined ? n : min, n)
@@ -13,8 +17,16 @@ function int(value, def, min, max) {
 }
 
 function bool(value, def) {
-  if (value === undefined || value === '') return def;
-  return !['false', '0', 'no', 'off'].includes(
+  if (value === undefined || value === '') {
+    return def;
+  }
+
+  return ![
+    'false',
+    '0',
+    'no',
+    'off'
+  ].includes(
     String(value).toLowerCase()
   );
 }
@@ -22,7 +34,11 @@ function bool(value, def) {
 function tryRequire(name, pick) {
   try {
     const m = require(name);
-    return pick ? pick(m) : m;
+
+    return pick
+      ? pick(m)
+      : m;
+
   } catch (e) {
     return null;
   }
@@ -39,14 +55,23 @@ function loadConfig(env = process.env) {
       ? env.CORS_ORIGINS.split(',')
       : DEFAULT_ORIGINS
   )
-    .map((s) => s.trim().replace(/\/+$/, ''))
+    .map((s) =>
+      s.trim().replace(/\/+$/, '')
+    )
     .filter(Boolean);
 
   return {
-    port: int(env.PORT, 10000, 1, 65535),
+    port:
+      int(
+        env.PORT,
+        10000,
+        1,
+        65535
+      ),
 
     nodeEnv:
-      env.NODE_ENV || 'development',
+      env.NODE_ENV ||
+      'development',
 
     dataDir:
       path.resolve(
@@ -64,10 +89,14 @@ function loadConfig(env = process.env) {
         .trim()
         .replace(/\/+$/, ''),
 
+    /*
+     * Maximum upload size:
+     * Default = 500 MB
+     */
     maxUploadBytes:
       int(
         env.MAX_UPLOAD_MB,
-        200,
+        500,
         1,
         2048
       ) * 1024 * 1024,
@@ -160,7 +189,10 @@ function loadConfig(env = process.env) {
         )
     },
 
+    // ==============================
     // FFmpeg
+    // ==============================
+
     ffmpegPath:
       env.FFMPEG_PATH ||
       tryRequire('ffmpeg-static') ||
@@ -193,10 +225,14 @@ function loadConfig(env = process.env) {
     // ==============================
 
     geminiApiKey:
-      (env.GEMINI_API_KEY || '').trim(),
+      (env.GEMINI_API_KEY || '')
+        .trim(),
 
     geminiModel:
-      (env.GEMINI_MODEL || 'gemini-3.8-flash').trim(),
+      (
+        env.GEMINI_MODEL ||
+        'gemini-3.8-flash'
+      ).trim(),
 
     aiHighlights:
       bool(
