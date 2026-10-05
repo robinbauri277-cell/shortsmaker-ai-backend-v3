@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+
 const {
   GoogleGenAI,
   createUserContent,
@@ -72,7 +73,9 @@ function normalizeHighlights(
     let duration = Number(item.durationSec);
     let score = Number(item.score);
 
-    if (!Number.isFinite(start)) continue;
+    if (!Number.isFinite(start)) {
+      continue;
+    }
 
     if (!Number.isFinite(duration) || duration <= 0) {
       duration = requestedDuration;
@@ -97,7 +100,10 @@ function normalizeHighlights(
       )
     );
 
-    if (duration < 1 || start >= durationSec) {
+    if (
+      duration < 1 ||
+      start >= durationSec
+    ) {
       continue;
     }
 
@@ -147,10 +153,10 @@ function normalizeHighlights(
           clipEnd,
           existingEnd
         ) -
-          Math.max(
-            clipStart,
-            existingStart
-          )
+        Math.max(
+          clipStart,
+          existingStart
+        )
       );
 
       const shorter = Math.min(
@@ -276,6 +282,10 @@ function createAIHighlights(
 
     let currentFile = file;
 
+    /*
+     * Gemini video processing check.
+     * Faster polling: every 2 seconds.
+     */
     for (
       let attempt = 0;
       attempt < 60;
@@ -308,7 +318,8 @@ function createAIHighlights(
         }`
       );
 
-      await sleep(5000);
+      // Faster polling
+      await sleep(2000);
 
       currentFile =
         await ai.files.get({
@@ -346,6 +357,7 @@ Target duration for each highlight:
 ${requestedDuration} seconds.
 
 Selection priorities:
+
 1. Strong hook or attention-grabbing opening.
 2. Interesting, emotional, surprising, useful, funny, dramatic, or highly engaging moment.
 3. Clear context so the clip makes sense by itself.
@@ -354,8 +366,11 @@ Selection priorities:
 6. Prefer moments that could perform well as YouTube Shorts, Instagram Reels, or TikTok.
 7. Keep every highlight inside the actual video duration.
 8. Do not invent events that are not present in the video.
+9. Prefer natural beginning and ending points.
+10. Prioritize audience retention potential.
 
 For every selected highlight return:
+
 - startSec: exact starting time in seconds
 - durationSec: clip duration in seconds
 - score: quality/viral potential from 0 to 1
@@ -364,6 +379,9 @@ For every selected highlight return:
 Return ONLY the requested JSON structure.
 `;
 
+    /*
+     * Detect temporary Gemini errors.
+     */
     function isRetryableGeminiError(error) {
       const status = Number(
         error?.status ||
@@ -392,114 +410,101 @@ Return ONLY the requested JSON structure.
       );
     }
 
+    /*
+     * IMPORTANT:
+     * No long retry delays.
+     *
+     * If Gemini returns a temporary 503/429/etc.,
+     * immediately let the fallback model handle it.
+     */
     async function requestHighlights(
       activeModel
     ) {
-      const maxAttempts = 3;
+      logger.log(
+        `[ai] Asking ${activeModel} to find highlights`
+      );
 
-      let lastError;
+      try {
+        const response =
+          await ai.models.generateContent({
+            model: activeModel,
 
-      for (
-        let attempt = 1;
-        attempt <= maxAttempts;
-        attempt++
-      ) {
-        try {
-          logger.log(
-            `[ai] Asking ${activeModel} to find highlights (attempt ${attempt}/${maxAttempts})`
-          );
+            contents:
+              createUserContent([
+                createPartFromUri(
+                  currentFile.uri,
+                  currentFile.mimeType ||
+                    getMimeType(inputPath)
+                ),
 
-          const response =
-            await ai.models.generateContent({
-              model: activeModel,
+                prompt
+              ]),
 
-              contents:
-                createUserContent([
-                  createPartFromUri(
-                    currentFile.uri,
-                    currentFile.mimeType ||
-                      getMimeType(inputPath)
-                  ),
-                  prompt
-                ]),
+            config: {
+              responseMimeType:
+                'application/json',
 
-              config: {
-                responseMimeType:
-                  'application/json',
+              responseSchema: {
+                type: 'array',
 
-                responseSchema: {
-                  type: 'array',
+                items: {
+                  type: 'object',
 
-                  items: {
-                    type: 'object',
-
-                    properties: {
-                      startSec: {
-                        type: 'number'
-                      },
-
-                      durationSec: {
-                        type: 'number'
-                      },
-
-                      score: {
-                        type: 'number'
-                      },
-
-                      reason: {
-                        type: 'string'
-                      }
+                  properties: {
+                    startSec: {
+                      type: 'number'
                     },
 
-                    required: [
-                      'startSec',
-                      'durationSec',
-                      'score',
-                      'reason'
-                    ]
-                  }
-                },
+                    durationSec: {
+                      type: 'number'
+                    },
 
-                temperature: 0.2
-              }
-            });
+                    score: {
+                      type: 'number'
+                    },
 
-          return response;
+                    reason: {
+                      type: 'string'
+                    }
+                  },
 
-        } catch (error) {
-          lastError = error;
+                  required: [
+                    'startSec',
+                    'durationSec',
+                    'score',
+                    'reason'
+                  ]
+                }
+              },
 
-          logger.error(
-            `[ai] Gemini error on ${activeModel}: ${
-              error?.message || error
-            }`
-          );
+              temperature: 0.2
+            }
+          });
 
-          if (
-            !isRetryableGeminiError(error) ||
-            attempt === maxAttempts
-          ) {
-            throw error;
-          }
+        return response;
 
-          const waitMs =
-            5000 *
-            Math.pow(
-              2,
-              attempt - 1
-            );
+      } catch (error) {
+        logger.error(
+          `[ai] Gemini error on ${activeModel}: ${
+            error?.message || error
+          }`
+        );
 
+        /*
+         * Do NOT wait here.
+         * The caller will immediately switch
+         * to the fallback model.
+         */
+        if (
+          isRetryableGeminiError(error)
+        ) {
           logger.warn(
-            `[ai] Temporary Gemini error. Retrying in ${
-              Math.round(waitMs / 1000)
-            } seconds...`
+            `[ai] ${activeModel} temporarily unavailable. Switching to fallback immediately.`
           );
-
-          await sleep(waitMs);
         }
-      }
 
-      throw lastError;
+        throw error;
+      }
     }
 
     let response;
@@ -521,7 +526,7 @@ Return ONLY the requested JSON structure.
         )
       ) {
         logger.warn(
-          `[ai] ${model} unavailable after retries. Trying fallback model: ${fallbackModel}`
+          `[ai] Trying fallback model immediately: ${fallbackModel}`
         );
 
         response =
