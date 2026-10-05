@@ -6,14 +6,24 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { ValidationError } = require('./errors');
 
-// FIX: shorts.js root folder में है, routes/ के अंदर नहीं
-const { createShortsRouter } = require('./shorts');
+// shorts.js root folder में है
+const {
+  createShortsRouter
+} = require('./shorts');
 
-function createApp({ config, ffmpeg, jobs }) {
+function createApp({
+  config,
+  ffmpeg,
+  jobs
+}) {
   const app = express();
 
   app.disable('x-powered-by');
-  app.set('trust proxy', 1);
+
+  app.set(
+    'trust proxy',
+    1
+  );
 
   app.use(
     helmet({
@@ -28,9 +38,25 @@ function createApp({ config, ffmpeg, jobs }) {
       config.corsOrigins || []
     );
 
+  /*
+   * ==========================================================
+   * CORS
+   * ==========================================================
+   *
+   * Chunked upload needs:
+   * PUT
+   * DELETE
+   * X-Upload-Id
+   * X-Upload-Token
+   * X-Chunk-Index
+   */
+
   app.use(
     cors({
-      origin: (origin, cb) => {
+      origin: (
+        origin,
+        cb
+      ) => {
         cb(
           null,
           !origin ||
@@ -41,22 +67,41 @@ function createApp({ config, ffmpeg, jobs }) {
       methods: [
         'GET',
         'POST',
+        'PUT',
+        'DELETE',
         'OPTIONS'
       ],
 
       allowedHeaders: [
         'Content-Type',
-        'X-Job-Token'
+        'X-Job-Token',
+        'X-Upload-Id',
+        'X-Upload-Token',
+        'X-Chunk-Index'
+      ],
+
+      exposedHeaders: [
+        'Content-Length'
       ],
 
       maxAge: 600
     })
   );
 
+  /*
+   * Extra origin protection.
+   */
+
   app.use(
-    (req, res, next) => {
+    (
+      req,
+      res,
+      next
+    ) => {
       const origin =
-        req.get('Origin');
+        req.get(
+          'Origin'
+        );
 
       if (
         origin &&
@@ -77,9 +122,18 @@ function createApp({ config, ffmpeg, jobs }) {
     }
   );
 
+  /*
+   * ==========================================================
+   * ROOT
+   * ==========================================================
+   */
+
   app.get(
     '/',
-    (req, res) => {
+    (
+      req,
+      res
+    ) => {
       res.json({
         name:
           'ShortsMaker AI backend',
@@ -90,6 +144,12 @@ function createApp({ config, ffmpeg, jobs }) {
     }
   );
 
+  /*
+   * ==========================================================
+   * HEALTH
+   * ==========================================================
+   */
+
   let cached = {
     at: 0,
     bins: null
@@ -97,7 +157,11 @@ function createApp({ config, ffmpeg, jobs }) {
 
   app.get(
     '/api/health',
-    async (req, res, next) => {
+    async (
+      req,
+      res,
+      next
+    ) => {
       try {
         if (
           !cached.bins ||
@@ -106,7 +170,8 @@ function createApp({ config, ffmpeg, jobs }) {
             60000
         ) {
           cached = {
-            at: Date.now(),
+            at:
+              Date.now(),
 
             bins:
               await ffmpeg
@@ -120,9 +185,12 @@ function createApp({ config, ffmpeg, jobs }) {
 
         /*
          * AI is available only when:
-         * 1. AI_HIGHLIGHTS=true
-         * 2. GEMINI_API_KEY exists
+         *
+         * AI_HIGHLIGHTS=true
+         * AND
+         * GEMINI_API_KEY exists
          */
+
         const aiReady =
           Boolean(
             config.aiHighlights &&
@@ -213,6 +281,12 @@ function createApp({ config, ffmpeg, jobs }) {
     }
   );
 
+  /*
+   * ==========================================================
+   * GLOBAL API RATE LIMIT
+   * ==========================================================
+   */
+
   app.use(
     '/api',
     rateLimit({
@@ -239,6 +313,12 @@ function createApp({ config, ffmpeg, jobs }) {
     })
   );
 
+  /*
+   * ==========================================================
+   * SHORTS API
+   * ==========================================================
+   */
+
   app.use(
     '/api/shorts',
     createShortsRouter({
@@ -248,8 +328,17 @@ function createApp({ config, ffmpeg, jobs }) {
     })
   );
 
+  /*
+   * ==========================================================
+   * 404
+   * ==========================================================
+   */
+
   app.use(
-    (req, res) => {
+    (
+      req,
+      res
+    ) => {
       res
         .status(404)
         .json({
@@ -261,6 +350,12 @@ function createApp({ config, ffmpeg, jobs }) {
         });
     }
   );
+
+  /*
+   * ==========================================================
+   * ERROR HANDLER
+   * ==========================================================
+   */
 
   app.use(
     (
@@ -280,7 +375,9 @@ function createApp({ config, ffmpeg, jobs }) {
         ValidationError
       ) {
         return res
-          .status(err.status)
+          .status(
+            err.status
+          )
           .json({
             error:
               err.message,
