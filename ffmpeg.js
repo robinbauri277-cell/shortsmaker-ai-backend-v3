@@ -25,7 +25,10 @@ function createFfmpeg(cfg) {
         });
       } catch (e) {
         return reject(
-          codeError('BINARY_MISSING', 'Failed to start process')
+          codeError(
+            'BINARY_MISSING',
+            'Failed to start process'
+          )
         );
       }
 
@@ -55,8 +58,12 @@ function createFfmpeg(cfg) {
           let i;
 
           while ((i = lineBuf.indexOf('\n')) >= 0) {
-            const line = lineBuf.slice(0, i).trim();
-            lineBuf = lineBuf.slice(i + 1);
+            const line = lineBuf
+              .slice(0, i)
+              .trim();
+
+            lineBuf =
+              lineBuf.slice(i + 1);
 
             if (line) {
               try {
@@ -150,7 +157,9 @@ function createFfmpeg(cfg) {
       result.ffmpeg = r.code === 0;
 
       const m =
-        /ffmpeg version (\S+)/.exec(r.stdout);
+        /ffmpeg version (\S+)/.exec(
+          r.stdout
+        );
 
       if (m) {
         result.version = m[1];
@@ -210,7 +219,8 @@ function createFfmpeg(cfg) {
           file
         ],
         {
-          timeoutMs: cfg.probeTimeoutMs
+          timeoutMs:
+            cfg.probeTimeoutMs
         }
       );
 
@@ -232,7 +242,8 @@ function createFfmpeg(cfg) {
     let data;
 
     try {
-      data = JSON.parse(res.stdout);
+      data =
+        JSON.parse(res.stdout);
     } catch (_) {
       throw invalid();
     }
@@ -266,12 +277,14 @@ function createFfmpeg(cfg) {
     }
 
 
-    const fmt = data.format || {};
+    const fmt =
+      data.format || {};
 
 
     const durationSec =
       Number.parseFloat(
-        fmt.duration || video.duration
+        fmt.duration ||
+        video.duration
       );
 
 
@@ -320,7 +333,10 @@ function createFfmpeg(cfg) {
   // OUTPUT SIZE
   // --------------------------------------------------
 
-  function getOutputSize(aspect, resolution) {
+  function getOutputSize(
+    aspect,
+    resolution
+  ) {
 
     const height =
       resolution === '1080p'
@@ -388,7 +404,7 @@ function createFfmpeg(cfg) {
   }) {
 
     /*
-      Fast center crop.
+      High-quality center crop.
 
       scale keeps the source large enough,
       crop creates exact output dimensions.
@@ -437,26 +453,27 @@ function createFfmpeg(cfg) {
       '-vf',
       vf,
 
-      // FAST H264
+      // High-quality H264
       '-c:v',
       'libx264',
 
+      // Better quality/speed balance
       '-preset',
-      'superfast',
+      'medium',
 
-      // Slightly optimized quality/speed
+      // High visual quality
       '-crf',
-      '24',
+      '18',
 
       '-pix_fmt',
       'yuv420p',
 
-      // Audio
+      // High-quality audio
       '-c:a',
       'aac',
 
       '-b:a',
-      '128k',
+      '192k',
 
       // Web playback
       '-movflags',
@@ -528,7 +545,8 @@ function createFfmpeg(cfg) {
 
     try {
 
-      info = await probe(file);
+      info =
+        await probe(file);
 
     } catch (_) {
 
@@ -590,7 +608,7 @@ function createFfmpeg(cfg) {
       Keep it configurable.
 
       VERIFY_DECODE=false
-      is recommended for the FAST mode.
+      is recommended for FAST mode.
     */
 
     if (cfg.verifyDecode) {
