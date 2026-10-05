@@ -78,7 +78,9 @@ function normalizeHighlights(
       duration = requestedDuration;
     }
 
-    if (!Number.isFinite(score)) score = 0.5;
+    if (!Number.isFinite(score)) {
+      score = 0.5;
+    }
 
     start = clamp(
       start,
@@ -101,29 +103,40 @@ function normalizeHighlights(
 
     cleaned.push({
       startSec: Math.round(start * 100) / 100,
-      durationSec: Math.round(duration * 100) / 100,
+
+      durationSec: Math.round(
+        duration * 100
+      ) / 100,
+
       score: Math.round(
         clamp(score, 0, 1) * 100
       ) / 100,
+
       reason: String(
         item.reason || 'Strong highlight'
       ).slice(0, 300)
     });
   }
 
-  cleaned.sort((a, b) => b.score - a.score);
+  cleaned.sort(
+    (a, b) => b.score - a.score
+  );
 
   const selected = [];
 
   for (const clip of cleaned) {
     const clipStart = clip.startSec;
+
     const clipEnd =
-      clip.startSec + clip.durationSec;
+      clip.startSec +
+      clip.durationSec;
 
     let overlaps = false;
 
     for (const existing of selected) {
-      const existingStart = existing.startSec;
+      const existingStart =
+        existing.startSec;
+
       const existingEnd =
         existing.startSec +
         existing.durationSec;
@@ -207,7 +220,7 @@ function createAIHighlights(
 
   const model =
     cfg.geminiModel ||
-    'gemini-3.8-flash';
+    'gemini-3.7-flash';
 
   async function analyzeVideo({
     inputPath,
@@ -256,7 +269,9 @@ function createAIHighlights(
     }
 
     logger.log(
-      `[ai] Gemini file uploaded: ${file.name || file.uri}`
+      `[ai] Gemini file uploaded: ${
+        file.name || file.uri
+      }`
     );
 
     let currentFile = file;
@@ -288,7 +303,9 @@ function createAIHighlights(
       }
 
       logger.log(
-        `[ai] Waiting for Gemini video processing... state=${stateName || 'PROCESSING'}`
+        `[ai] Waiting for Gemini video processing... state=${
+          stateName || 'PROCESSING'
+        }`
       );
 
       await sleep(5000);
@@ -307,7 +324,9 @@ function createAIHighlights(
         ? finalState
         : finalState?.name;
 
-    if (finalStateName !== 'ACTIVE') {
+    if (
+      finalStateName !== 'ACTIVE'
+    ) {
       throw new Error(
         'Gemini video processing timed out.'
       );
@@ -345,64 +364,175 @@ For every selected highlight return:
 Return ONLY the requested JSON structure.
 `;
 
-    logger.log(
-      `[ai] Asking ${model} to find highlights`
-    );
+    function isRetryableGeminiError(error) {
+      const status = Number(
+        error?.status ||
+        error?.code ||
+        error?.error?.code
+      );
 
-    const response =
-      await ai.models.generateContent({
-        model,
+      const message = String(
+        error?.message ||
+        error?.error?.message ||
+        error
+      ).toLowerCase();
 
-        contents:
-          createUserContent([
-            createPartFromUri(
-              currentFile.uri,
-              currentFile.mimeType ||
-                getMimeType(inputPath)
-            ),
-            prompt
-          ]),
+      return (
+        status === 408 ||
+        status === 429 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        message.includes('high demand') ||
+        message.includes('temporarily unavailable') ||
+        message.includes('unavailable') ||
+        message.includes('rate limit') ||
+        message.includes('resource exhausted')
+      );
+    }
 
-        config: {
-          responseMimeType:
-            'application/json',
+    async function requestHighlights(
+      activeModel
+    ) {
+      const maxAttempts = 3;
 
-          responseSchema: {
-            type: 'array',
+      let lastError;
 
-            items: {
-              type: 'object',
+      for (
+        let attempt = 1;
+        attempt <= maxAttempts;
+        attempt++
+      ) {
+        try {
+          logger.log(
+            `[ai] Asking ${activeModel} to find highlights (attempt ${attempt}/${maxAttempts})`
+          );
 
-              properties: {
-                startSec: {
-                  type: 'number'
+          const response =
+            await ai.models.generateContent({
+              model: activeModel,
+
+              contents:
+                createUserContent([
+                  createPartFromUri(
+                    currentFile.uri,
+                    currentFile.mimeType ||
+                      getMimeType(inputPath)
+                  ),
+                  prompt
+                ]),
+
+              config: {
+                responseMimeType:
+                  'application/json',
+
+                responseSchema: {
+                  type: 'array',
+
+                  items: {
+                    type: 'object',
+
+                    properties: {
+                      startSec: {
+                        type: 'number'
+                      },
+
+                      durationSec: {
+                        type: 'number'
+                      },
+
+                      score: {
+                        type: 'number'
+                      },
+
+                      reason: {
+                        type: 'string'
+                      }
+                    },
+
+                    required: [
+                      'startSec',
+                      'durationSec',
+                      'score',
+                      'reason'
+                    ]
+                  }
                 },
 
-                durationSec: {
-                  type: 'number'
-                },
+                temperature: 0.2
+              }
+            });
 
-                score: {
-                  type: 'number'
-                },
+          return response;
 
-                reason: {
-                  type: 'string'
-                }
-              },
+        } catch (error) {
+          lastError = error;
 
-              required: [
-                'startSec',
-                'durationSec',
-                'score',
-                'reason'
-              ]
-            }
-          },
+          logger.error(
+            `[ai] Gemini error on ${activeModel}: ${
+              error?.message || error
+            }`
+          );
 
-          temperature: 0.2
+          if (
+            !isRetryableGeminiError(error) ||
+            attempt === maxAttempts
+          ) {
+            throw error;
+          }
+
+          const waitMs =
+            5000 *
+            Math.pow(
+              2,
+              attempt - 1
+            );
+
+          logger.warn(
+            `[ai] Temporary Gemini error. Retrying in ${
+              Math.round(waitMs / 1000)
+            } seconds...`
+          );
+
+          await sleep(waitMs);
         }
-      });
+      }
+
+      throw lastError;
+    }
+
+    let response;
+
+    try {
+      response =
+        await requestHighlights(model);
+
+    } catch (primaryError) {
+      const fallbackModel =
+        process.env.GEMINI_FALLBACK_MODEL ||
+        'gemini-3.5-flash-lite';
+
+      if (
+        fallbackModel &&
+        fallbackModel !== model &&
+        isRetryableGeminiError(
+          primaryError
+        )
+      ) {
+        logger.warn(
+          `[ai] ${model} unavailable after retries. Trying fallback model: ${fallbackModel}`
+        );
+
+        response =
+          await requestHighlights(
+            fallbackModel
+          );
+
+      } else {
+        throw primaryError;
+      }
+    }
 
     const raw =
       response.text;
