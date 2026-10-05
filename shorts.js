@@ -65,9 +65,7 @@ function parseJsonBody(req) {
     return req.body;
   }
 
-  if (
-    Buffer.isBuffer(req.body)
-  ) {
+  if (Buffer.isBuffer(req.body)) {
     if (!req.body.length) {
       return {};
     }
@@ -93,8 +91,7 @@ function createShortsRouter({
   ffmpeg,
   jobs
 }) {
-  const router =
-    express.Router();
+  const router = express.Router();
 
   /*
    * ==========================================================
@@ -102,69 +99,60 @@ function createShortsRouter({
    * ==========================================================
    */
 
-  const uploadLimiter =
-    rateLimit({
-      windowMs:
-        config.rateLimit.uploadWindowMs,
+  const uploadLimiter = rateLimit({
+    windowMs:
+      config.rateLimit.uploadWindowMs,
 
-      limit:
-        config.rateLimit.uploadMax,
+    limit:
+      config.rateLimit.uploadMax,
 
-      standardHeaders:
-        'draft-7',
+    standardHeaders:
+      'draft-7',
 
-      legacyHeaders:
-        false,
+    legacyHeaders:
+      false,
 
-      message: {
-        error:
-          'Too many uploads. Please wait before trying again.',
-
-        code:
-          'RATE_LIMITED'
-      }
-    });
+    message: {
+      error:
+        'Too many uploads. Please wait before trying again.',
+      code:
+        'RATE_LIMITED'
+    }
+  });
 
   /*
-   * Chunk uploads need a little more request frequency
-   * than the old single-file endpoint.
-   *
-   * The actual file-size protection is still enforced
-   * by the upload session.
+   * Chunk upload needs more requests than normal upload.
+   * A 500 MB file with 8 MB chunks needs about 63 chunks.
    */
 
-  const chunkLimiter =
-    rateLimit({
-      windowMs:
-        config.rateLimit.uploadWindowMs,
+  const chunkLimiter = rateLimit({
+    windowMs:
+      config.rateLimit.uploadWindowMs,
 
-      limit:
-        Math.max(
-          config.rateLimit.uploadMax * 100,
-          1000
-        ),
+    limit:
+      Math.max(
+        config.rateLimit.uploadMax * 100,
+        1000
+      ),
 
-      standardHeaders:
-        'draft-7',
+    standardHeaders:
+      'draft-7',
 
-      legacyHeaders:
-        false,
+    legacyHeaders:
+      false,
 
-      message: {
-        error:
-          'Too many upload chunks. Please slow down.',
-
-        code:
-          'RATE_LIMITED'
-      }
-    });
+    message: {
+      error:
+        'Too many upload chunks. Please slow down.',
+      code:
+        'RATE_LIMITED'
+    }
+  });
 
   /*
    * ==========================================================
    * OLD MULTIPART UPLOAD
    * ==========================================================
-   *
-   * Existing /process and /trim remain supported.
    */
 
   const storage =
@@ -312,7 +300,7 @@ function createShortsRouter({
 
   /*
    * ==========================================================
-   * COMMON JOB CREATION
+   * NORMAL MULTIPART JOB CREATION
    * ==========================================================
    */
 
@@ -432,16 +420,11 @@ function createShortsRouter({
 
   /*
    * ==========================================================
-   * RESUMABLE / CHUNKED UPLOAD
+   * RESUMABLE UPLOAD: INIT
    * ==========================================================
-   */
-
-  /*
-   * 1. CREATE UPLOAD SESSION
    *
    * POST /api/shorts/upload/init
    *
-   * JSON:
    * {
    *   "filename": "video.mp4",
    *   "size": 12345678,
@@ -451,6 +434,7 @@ function createShortsRouter({
 
   router.post(
     '/upload/init',
+
     uploadLimiter,
 
     express.json({
@@ -502,10 +486,22 @@ function createShortsRouter({
           );
         }
 
-        /*
-         * Validate the filename/mime pair
-         * before creating a session.
-         */
+        if (
+          size >
+          config.maxUploadBytes
+        ) {
+          throw new ValidationError(
+            'FILE_TOO_LARGE',
+
+            `File is too large. Maximum is ${Math.round(
+              config.maxUploadBytes /
+                1048576
+            )} MB.`,
+
+            413
+          );
+        }
+
         checkUploadMeta(
           filename,
           mimeType
@@ -542,7 +538,9 @@ function createShortsRouter({
   );
 
   /*
-   * 2. UPLOAD ONE CHUNK
+   * ==========================================================
+   * RESUMABLE UPLOAD: CHUNK
+   * ==========================================================
    *
    * PUT /api/shorts/upload/chunk
    *
@@ -552,7 +550,7 @@ function createShortsRouter({
    * X-Chunk-Index
    *
    * Body:
-   * raw binary chunk
+   * raw binary
    */
 
   router.put(
@@ -650,22 +648,11 @@ function createShortsRouter({
   );
 
   /*
-   * 3. COMPLETE UPLOAD
+   * ==========================================================
+   * RESUMABLE UPLOAD: COMPLETE
+   * ==========================================================
    *
    * POST /api/shorts/upload/complete
-   *
-   * JSON:
-   * {
-   *   uploadId,
-   *   uploadToken,
-   *   mode: "process",
-   *   duration: "60",
-   *   aspectRatio: "9:16",
-   *   clipCount: "3",
-   *   startTime: "0",
-   *   hook: "",
-   *   instructions: ""
-   * }
    */
 
   router.post(
@@ -729,8 +716,9 @@ function createShortsRouter({
         }
 
         /*
-         * Assemble the chunks.
+         * Assemble all chunks into one file.
          */
+
         const completed =
           await jobs.completeUpload(
             uploadId,
@@ -745,7 +733,8 @@ function createShortsRouter({
             completed.filename,
 
           mimetype:
-            'video/mp4',
+            completed.mimeType ||
+            'application/octet-stream',
 
           size:
             completed.size
@@ -753,8 +742,9 @@ function createShortsRouter({
 
         try {
           /*
-           * Probe the completed video.
+           * Verify the completed file.
            */
+
           const source =
             await ffmpeg.probe(
               file.path
@@ -766,27 +756,26 @@ function createShortsRouter({
           );
 
           /*
-           * Convert body to the same shape
-           * used by the old /process endpoint.
+           * IMPORTANT:
+           *
+           * Keep the original validation field names.
+           *
+           * process:
+           * duration
+           * clipCount
+           * start
+           * aspect
+           * resolution
+           *
+           * trim:
+           * start
+           * end
+           * aspect
+           * resolution
            */
+
           const processBody = {
-            duration:
-              body.duration,
-
-            aspectRatio:
-              body.aspectRatio,
-
-            clipCount:
-              body.clipCount,
-
-            startTime:
-              body.startTime,
-
-            hook:
-              body.hook,
-
-            instructions:
-              body.instructions
+            ...body
           };
 
           const parse =
@@ -800,6 +789,13 @@ function createShortsRouter({
               source,
               config
             );
+
+          /*
+           * AI is available only for normal
+           * /process mode.
+           *
+           * Manual trim never uses AI.
+           */
 
           const allowAI =
             mode ===
@@ -852,8 +848,17 @@ function createShortsRouter({
                 ? 0
                 : job.clips.length,
 
-            warnings:
-              job.warnings || [],
+            warnings: [
+              ...(job.warnings || []),
+
+              ...(allowAI &&
+              config.aiHighlights &&
+              !config.geminiApiKey
+                ? [
+                    'AI highlights are enabled but GEMINI_API_KEY is not configured. Falling back to basic clips.'
+                  ]
+                : [])
+            ],
 
             statusUrl:
               `${base}/api/shorts/status/${job.id}`,
@@ -878,9 +883,9 @@ function createShortsRouter({
   );
 
   /*
-   * Optional upload cancellation.
-   *
-   * DELETE /api/shorts/upload/:uploadId
+   * ==========================================================
+   * CANCEL UPLOAD
+   * ==========================================================
    */
 
   router.delete(
@@ -897,6 +902,14 @@ function createShortsRouter({
         const uploadToken =
           uploadTokenFrom(req);
 
+        if (!uploadToken) {
+          throw new ValidationError(
+            'UPLOAD_TOKEN_REQUIRED',
+            'Upload token is required.',
+            401
+          );
+        }
+
         const result =
           await jobs.cancelUpload(
             uploadId,
@@ -912,7 +925,7 @@ function createShortsRouter({
 
   /*
    * ==========================================================
-   * EXISTING PROCESS ENDPOINT
+   * NORMAL /PROCESS
    * ==========================================================
    */
 
@@ -939,7 +952,7 @@ function createShortsRouter({
 
   /*
    * ==========================================================
-   * EXISTING TRIM ENDPOINT
+   * NORMAL /TRIM
    * ==========================================================
    */
 
