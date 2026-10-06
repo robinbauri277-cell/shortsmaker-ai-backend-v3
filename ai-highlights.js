@@ -1,574 +1,567 @@
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 
-const {
-  GoogleGenAI,
-  createUserContent,
-  createPartFromUri
-} = require('@google/genai');
+const sleep = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+function cleanJson(text) {
+  let value = String(text || '').trim();
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function getMimeType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-
-  const map = {
-    '.mp4': 'video/mp4',
-    '.mov': 'video/quicktime',
-    '.webm': 'video/webm',
-    '.mkv': 'video/x-matroska',
-    '.avi': 'video/x-msvideo',
-    '.m4v': 'video/x-m4v'
-  };
-
-  return map[ext] || 'video/mp4';
-}
-
-function parseJson(text) {
-  if (!text) {
-    throw new Error('Gemini returned an empty response.');
-  }
-
-  try {
-    return JSON.parse(text);
-  } catch (_) {
-    const cleaned = String(text)
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
+  if (value.startsWith('```')) {
+    value = value
+      .replace(/^```(?:json)?/i, '')
+      .replace(/```$/i, '')
       .trim();
-
-    try {
-      return JSON.parse(cleaned);
-    } catch (_) {
-      throw new Error('Gemini returned invalid JSON.');
-    }
   }
+
+  return value;
 }
 
-function normalizeHighlights(
-  value,
-  durationSec,
-  requestedCount,
-  requestedDuration
-) {
-  const list = Array.isArray(value)
-    ? value
-    : Array.isArray(value?.highlights)
-      ? value.highlights
-      : [];
-
-  const cleaned = [];
-
-  for (const item of list) {
-    let start = Number(item.startSec);
-    let duration = Number(item.durationSec);
-    let score = Number(item.score);
-
-    if (!Number.isFinite(start)) {
-      continue;
-    }
-
-    if (!Number.isFinite(duration) || duration <= 0) {
-      duration = requestedDuration;
-    }
-
-    if (!Number.isFinite(score)) {
-      score = 0.5;
-    }
-
-    start = clamp(
-      start,
-      0,
-      Math.max(0, durationSec - 1)
-    );
-
-    duration = clamp(
-      duration,
-      1,
-      Math.min(
-        requestedDuration,
-        durationSec - start
-      )
-    );
-
-    if (
-      duration < 1 ||
-      start >= durationSec
-    ) {
-      continue;
-    }
-
-    cleaned.push({
-      startSec: Math.round(start * 100) / 100,
-
-      durationSec: Math.round(
-        duration * 100
-      ) / 100,
-
-      score: Math.round(
-        clamp(score, 0, 1) * 100
-      ) / 100,
-
-      reason: String(
-        item.reason || 'Strong highlight'
-      ).slice(0, 300)
-    });
-  }
-
-  cleaned.sort(
-    (a, b) => b.score - a.score
-  );
-
-  const selected = [];
-
-  for (const clip of cleaned) {
-    const clipStart = clip.startSec;
-
-    const clipEnd =
-      clip.startSec +
-      clip.durationSec;
-
-    let overlaps = false;
-
-    for (const existing of selected) {
-      const existingStart =
-        existing.startSec;
-
-      const existingEnd =
-        existing.startSec +
-        existing.durationSec;
-
-      const intersection = Math.max(
-        0,
-        Math.min(
-          clipEnd,
-          existingEnd
-        ) -
-        Math.max(
-          clipStart,
-          existingStart
-        )
-      );
-
-      const shorter = Math.min(
-        clip.durationSec,
-        existing.durationSec
-      );
-
-      if (
-        shorter > 0 &&
-        intersection / shorter > 0.55
-      ) {
-        overlaps = true;
-        break;
-      }
-    }
-
-    if (!overlaps) {
-      selected.push(clip);
-    }
-
-    if (
-      selected.length >= requestedCount
-    ) {
-      break;
-    }
-  }
-
-  if (
-    selected.length < requestedCount
-  ) {
-    for (const clip of cleaned) {
-      if (
-        selected.length >= requestedCount
-      ) {
-        break;
-      }
-
-      if (!selected.includes(clip)) {
-        selected.push(clip);
-      }
-    }
-  }
-
-  selected.sort(
-    (a, b) => a.startSec - b.startSec
-  );
-
-  return selected.slice(
-    0,
-    requestedCount
-  );
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
 }
 
-function createAIHighlights(
-  cfg,
-  logger = console
-) {
-  if (!cfg || !cfg.geminiApiKey) {
-    throw new Error(
-      'GEMINI_API_KEY is not configured.'
-    );
+function createAIHighlights(cfg, logger = console) {
+  let clientPromise = null;
+
+  async function getClient() {
+    if (!cfg.geminiApiKey) {
+      throw new Error('GEMINI_API_KEY is not configured.');
+    }
+
+    if (!clientPromise) {
+      clientPromise = import('@google/genai').then(
+        ({ GoogleGenAI }) =>
+          new GoogleGenAI({
+            apiKey: cfg.geminiApiKey
+          })
+      );
+    }
+
+    return clientPromise;
   }
-
-  const ai = new GoogleGenAI({
-    apiKey: cfg.geminiApiKey
-  });
-
-  const model =
-    cfg.geminiModel ||
-    'gemini-3.7-flash';
 
   async function analyzeVideo({
     inputPath,
     durationSec,
-    clipCount = 3,
-    clipDurationSec = 30
+    clipCount,
+    clipDurationSec
   }) {
-    if (
-      !inputPath ||
-      !fs.existsSync(inputPath)
-    ) {
-      throw new Error(
-        'Input video file not found.'
-      );
-    }
-
-    const requestedCount = clamp(
-      Number(clipCount) || 3,
-      1,
-      10
-    );
-
-    const requestedDuration = clamp(
-      Number(clipDurationSec) || 30,
-      5,
-      60
-    );
+    const ai = await getClient();
 
     logger.log(
-      `[ai] Uploading video to Gemini: ${path.basename(inputPath)}`
+      '[ai] uploading video for highlight analysis'
     );
 
-    const file =
-      await ai.files.upload({
-        file: inputPath,
-        config: {
-          mimeType:
-            getMimeType(inputPath)
-        }
-      });
-
-    if (!file || !file.uri) {
-      throw new Error(
-        'Gemini file upload failed.'
-      );
-    }
-
-    logger.log(
-      `[ai] Gemini file uploaded: ${
-        file.name || file.uri
-      }`
-    );
-
-    let currentFile = file;
-
-    /*
-     * Gemini video processing check.
-     * Faster polling: every 2 seconds.
-     */
-    for (
-      let attempt = 0;
-      attempt < 60;
-      attempt++
-    ) {
-      const state =
-        currentFile.state;
-
-      const stateName =
-        typeof state === 'string'
-          ? state
-          : state?.name;
-
-      if (stateName === 'ACTIVE') {
-        break;
+    let file = await ai.files.upload({
+      file: inputPath,
+      config: {
+        mimeType: mimeFromPath(inputPath)
       }
+    });
 
-      if (
-        stateName === 'FAILED' ||
-        stateName === 'ERROR'
+    try {
+      const maxWaitMs = 8 * 60 * 1000;
+      const started = Date.now();
+
+      while (
+        !file.state ||
+        String(file.state) !== 'ACTIVE'
       ) {
-        throw new Error(
-          'Gemini failed to process the uploaded video.'
-        );
+        if (
+          Date.now() - started >
+          maxWaitMs
+        ) {
+          throw new Error(
+            'Gemini video processing timed out.'
+          );
+        }
+
+        if (
+          String(file.state) === 'FAILED'
+        ) {
+          throw new Error(
+            'Gemini failed to process the video.'
+          );
+        }
+
+        await sleep(4000);
+
+        file = await ai.files.get({
+          name: file.name
+        });
       }
 
+      const maxClips = clamp(
+        Number(clipCount) || 3,
+        1,
+        5
+      );
+
+      /*
+       * User requested duration.
+       * Allowed:
+       * 15 - 60 seconds
+       */
+      const targetDuration = clamp(
+        Number(clipDurationSec) || 30,
+        15,
+        60
+      );
+
+      /*
+       * Actual source video duration.
+       */
+      const sourceDuration = Math.max(
+        1,
+        Number(durationSec) || 1
+      );
+
+      /*
+       * If source video is shorter than requested duration,
+       * we can only use the available video duration.
+       *
+       * Example:
+       * Video = 40 sec
+       * User = 60 sec
+       * Actual = 40 sec
+       */
+      const actualTargetDuration = Math.min(
+        targetDuration,
+        sourceDuration
+      );
+
       logger.log(
-        `[ai] Waiting for Gemini video processing... state=${
-          stateName || 'PROCESSING'
-        }`
+        `[ai] requested duration: ${targetDuration}s`
       );
 
-      // Faster polling
-      await sleep(2000);
-
-      currentFile =
-        await ai.files.get({
-          name: currentFile.name
-        });
-    }
-
-    const finalState =
-      currentFile.state;
-
-    const finalStateName =
-      typeof finalState === 'string'
-        ? finalState
-        : finalState?.name;
-
-    if (
-      finalStateName !== 'ACTIVE'
-    ) {
-      throw new Error(
-        'Gemini video processing timed out.'
-      );
-    }
-
-    const prompt = `
-You are the highlight-selection engine for ShortsMaker AI.
-
-Analyze the uploaded video and select the strongest moments that can work as short-form vertical videos.
-
-Video duration:
-${durationSec} seconds.
-
-Select up to ${requestedCount} independent highlights.
-
-Target duration for each highlight:
-${requestedDuration} seconds.
-
-Selection priorities:
-
-1. Strong hook or attention-grabbing opening.
-2. Interesting, emotional, surprising, useful, funny, dramatic, or highly engaging moment.
-3. Clear context so the clip makes sense by itself.
-4. Avoid dead air, silence, greetings, repetitive sections, advertisements, long introductions, and weak moments.
-5. Avoid selecting the same moment more than once.
-6. Prefer moments that could perform well as YouTube Shorts, Instagram Reels, or TikTok.
-7. Keep every highlight inside the actual video duration.
-8. Do not invent events that are not present in the video.
-9. Prefer natural beginning and ending points.
-10. Prioritize audience retention potential.
-
-For every selected highlight return:
-
-- startSec: exact starting time in seconds
-- durationSec: clip duration in seconds
-- score: quality/viral potential from 0 to 1
-- reason: short explanation of why the moment is strong
-
-Return ONLY the requested JSON structure.
-`;
-
-    /*
-     * Detect temporary Gemini errors.
-     */
-    function isRetryableGeminiError(error) {
-      const status = Number(
-        error?.status ||
-        error?.code ||
-        error?.error?.code
-      );
-
-      const message = String(
-        error?.message ||
-        error?.error?.message ||
-        error
-      ).toLowerCase();
-
-      return (
-        status === 408 ||
-        status === 429 ||
-        status === 500 ||
-        status === 502 ||
-        status === 503 ||
-        status === 504 ||
-        message.includes('high demand') ||
-        message.includes('temporarily unavailable') ||
-        message.includes('unavailable') ||
-        message.includes('rate limit') ||
-        message.includes('resource exhausted')
-      );
-    }
-
-    /*
-     * IMPORTANT:
-     * No long retry delays.
-     *
-     * If Gemini returns a temporary 503/429/etc.,
-     * immediately let the fallback model handle it.
-     */
-    async function requestHighlights(
-      activeModel
-    ) {
       logger.log(
-        `[ai] Asking ${activeModel} to find highlights`
+        `[ai] source duration: ${sourceDuration.toFixed(2)}s`
       );
 
-      try {
-        const response =
-          await ai.models.generateContent({
-            model: activeModel,
+      logger.log(
+        `[ai] final target duration: ${actualTargetDuration}s`
+      );
 
-            contents:
-              createUserContent([
-                createPartFromUri(
-                  currentFile.uri,
-                  currentFile.mimeType ||
-                    getMimeType(inputPath)
-                ),
+      const schema = {
+        type: 'object',
 
-                prompt
-              ]),
+        properties: {
+          highlights: {
+            type: 'array',
 
-            config: {
-              responseMimeType:
-                'application/json',
+            items: {
+              type: 'object',
 
-              responseSchema: {
-                type: 'array',
+              properties: {
+                startSec: {
+                  type: 'number'
+                },
 
-                items: {
-                  type: 'object',
+                endSec: {
+                  type: 'number'
+                },
 
-                  properties: {
-                    startSec: {
-                      type: 'number'
-                    },
+                score: {
+                  type: 'number'
+                },
 
-                    durationSec: {
-                      type: 'number'
-                    },
-
-                    score: {
-                      type: 'number'
-                    },
-
-                    reason: {
-                      type: 'string'
-                    }
-                  },
-
-                  required: [
-                    'startSec',
-                    'durationSec',
-                    'score',
-                    'reason'
-                  ]
+                reason: {
+                  type: 'string'
                 }
               },
 
-              temperature: 0.2
+              required: [
+                'startSec',
+                'endSec',
+                'score',
+                'reason'
+              ]
             }
-          });
+          }
+        },
 
-        return response;
+        required: [
+          'highlights'
+        ]
+      };
 
-      } catch (error) {
-        logger.error(
-          `[ai] Gemini error on ${activeModel}: ${
-            error?.message || error
-          }`
+      const prompt = `
+You are an expert short-form video editor.
+
+Analyze the uploaded video and identify the best moments
+that could become viral YouTube Shorts / Instagram Reels.
+
+Video duration:
+${sourceDuration.toFixed(2)} seconds.
+
+Return up to ${maxClips} strong highlights.
+
+Requested final clip duration:
+${targetDuration} seconds.
+
+Each highlight should:
+
+- have a strong hook
+- contain useful, surprising, emotional, funny,
+  informative or highly engaging content
+- avoid boring introductions
+- avoid long silence
+- avoid duplicate moments
+- identify the strongest possible moment
+- provide an accurate start timestamp
+
+IMPORTANT:
+
+- startSec MUST be within the video duration.
+- endSec MUST be greater than startSec.
+- Do not invent timestamps.
+- Prefer a segment around ${targetDuration} seconds.
+- Choose a start point that allows a full ${targetDuration}-second clip whenever possible.
+- Score each highlight from 0 to 100.
+
+IMPORTANT BACKEND RULE:
+
+The backend will determine the final clip duration.
+Your endSec is only used as a reference for the selected moment.
+
+Return ONLY JSON matching the requested schema.
+`;
+
+      logger.log(
+        '[ai] analyzing video'
+      );
+
+      const response =
+        await ai.models.generateContent({
+          model:
+            cfg.geminiModel ||
+            'gemini-3.8-flash',
+
+          contents: [
+            {
+              fileData: {
+                fileUri: file.uri,
+                mimeType: file.mimeType
+              }
+            },
+
+            {
+              text: prompt
+            }
+          ],
+
+          config: {
+            responseMimeType:
+              'application/json',
+
+            responseSchema:
+              schema,
+
+            temperature:
+              0.2
+          }
+        });
+
+      const raw =
+        response.text ||
+        '';
+
+      const parsed =
+        JSON.parse(
+          cleanJson(raw)
         );
 
-        /*
-         * Do NOT wait here.
-         * The caller will immediately switch
-         * to the fallback model.
-         */
-        if (
-          isRetryableGeminiError(error)
-        ) {
-          logger.warn(
-            `[ai] ${activeModel} temporarily unavailable. Switching to fallback immediately.`
+      const highlights =
+        Array.isArray(
+          parsed.highlights
+        )
+          ? parsed.highlights
+          : [];
+
+      /*
+       * IMPORTANT:
+       *
+       * Gemini may return:
+       *
+       * start = 120
+       * end   = 150
+       *
+       * even when user requested 60 seconds.
+       *
+       * We DO NOT use Gemini's duration.
+       *
+       * We use Gemini's start as an anchor
+       * and force the requested duration.
+       */
+
+      const normalized =
+        highlights
+          .map((h) => {
+            const start =
+              Number(h.startSec);
+
+            const score =
+              Number(h.score);
+
+            if (
+              !Number.isFinite(start)
+            ) {
+              return null;
+            }
+
+            /*
+             * Keep the entire requested duration
+             * inside the source video.
+             *
+             * Example:
+             *
+             * Video = 180 sec
+             * Target = 60 sec
+             * Gemini start = 150 sec
+             *
+             * Instead of 150 -> 210,
+             * which exceeds the video,
+             * shift it backward:
+             *
+             * 120 -> 180
+             */
+            let safeStart =
+              clamp(
+                start,
+                0,
+                Math.max(
+                  0,
+                  sourceDuration -
+                    actualTargetDuration
+                )
+              );
+
+            let safeEnd =
+              Math.min(
+                sourceDuration,
+                safeStart +
+                  actualTargetDuration
+              );
+
+            /*
+             * Safety check.
+             *
+             * Make sure requested duration
+             * is recovered whenever possible.
+             */
+            if (
+              safeEnd -
+                safeStart <
+              actualTargetDuration
+            ) {
+              safeStart =
+                Math.max(
+                  0,
+                  safeEnd -
+                    actualTargetDuration
+                );
+
+              safeEnd =
+                Math.min(
+                  sourceDuration,
+                  safeStart +
+                    actualTargetDuration
+                );
+            }
+
+            if (
+              safeEnd <=
+              safeStart
+            ) {
+              return null;
+            }
+
+            const finalDuration =
+              Math.round(
+                (
+                  safeEnd -
+                  safeStart
+                ) * 100
+              ) / 100;
+
+            logger.log(
+              `[ai] normalized highlight: ` +
+              `${safeStart.toFixed(2)} -> ` +
+              `${safeEnd.toFixed(2)} ` +
+              `(${finalDuration.toFixed(2)}s)`
+            );
+
+            return {
+              startSec:
+                Math.round(
+                  safeStart * 100
+                ) / 100,
+
+              durationSec:
+                finalDuration,
+
+              score:
+                clamp(
+                  Number.isFinite(
+                    score
+                  )
+                    ? score
+                    : 50,
+                  0,
+                  100
+                ),
+
+              reason:
+                String(
+                  h.reason ||
+                  'AI-selected highlight'
+                ).slice(
+                  0,
+                  500
+                )
+            };
+          })
+          .filter(Boolean);
+
+      /*
+       * Highest scoring clips first.
+       */
+      normalized.sort(
+        (a, b) =>
+          b.score -
+          a.score
+      );
+
+      const selected = [];
+
+      /*
+       * Remove overlapping clips.
+       */
+      for (
+        const candidate of normalized
+      ) {
+        const overlaps =
+          selected.some(
+            (x) => {
+              const a1 =
+                candidate.startSec;
+
+              const a2 =
+                candidate.startSec +
+                candidate.durationSec;
+
+              const b1 =
+                x.startSec;
+
+              const b2 =
+                x.startSec +
+                x.durationSec;
+
+              return (
+                Math.max(
+                  a1,
+                  b1
+                ) <
+                Math.min(
+                  a2,
+                  b2
+                )
+              );
+            }
+          );
+
+        if (!overlaps) {
+          selected.push(
+            candidate
           );
         }
 
-        throw error;
+        if (
+          selected.length >=
+          maxClips
+        ) {
+          break;
+        }
       }
-    }
 
-    let response;
-
-    try {
-      response =
-        await requestHighlights(model);
-
-    } catch (primaryError) {
-      const fallbackModel =
-        process.env.GEMINI_FALLBACK_MODEL ||
-        'gemini-3.5-flash-lite';
-
-      if (
-        fallbackModel &&
-        fallbackModel !== model &&
-        isRetryableGeminiError(
-          primaryError
+      /*
+       * Return final AI highlights.
+       *
+       * durationSec here is now the
+       * BACKEND-FORCED duration.
+       */
+      return selected
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
         )
-      ) {
-        logger.warn(
-          `[ai] Trying fallback model immediately: ${fallbackModel}`
+        .map(
+          (h, index) => ({
+            index:
+              index + 1,
+
+            startSec:
+              h.startSec,
+
+            durationSec:
+              h.durationSec,
+
+            score:
+              h.score,
+
+            reason:
+              h.reason
+          })
         );
 
-        response =
-          await requestHighlights(
-            fallbackModel
+    } finally {
+      /*
+       * Delete Gemini uploaded file
+       * after analysis.
+       */
+      if (
+        file &&
+        file.name
+      ) {
+        await ai.files
+          .delete({
+            name:
+              file.name
+          })
+          .catch(
+            () => {}
           );
-
-      } else {
-        throw primaryError;
       }
     }
-
-    const raw =
-      response.text;
-
-    const parsed =
-      parseJson(raw);
-
-    const highlights =
-      normalizeHighlights(
-        parsed,
-        Number(durationSec),
-        requestedCount,
-        requestedDuration
-      );
-
-    if (!highlights.length) {
-      throw new Error(
-        'Gemini did not return usable highlights.'
-      );
-    }
-
-    logger.log(
-      `[ai] Selected ${highlights.length} highlight(s)`
-    );
-
-    return highlights;
   }
 
   return {
     analyzeVideo
   };
+}
+
+function mimeFromPath(file) {
+  const ext =
+    path.extname(file)
+      .toLowerCase();
+
+  if (
+    ext === '.webm'
+  ) {
+    return 'video/webm';
+  }
+
+  if (
+    ext === '.mov' ||
+    ext === '.qt'
+  ) {
+    return 'video/quicktime';
+  }
+
+  return 'video/mp4';
 }
 
 module.exports = {
