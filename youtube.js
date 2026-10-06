@@ -132,6 +132,25 @@ function runYtDlp({
       '--max-filesize',
       String(maxSize),
 
+      /*
+       * Use a client that currently avoids
+       * the GVS/player PO-token requirement.
+       */
+      '--extractor-args',
+      'youtube:player_client=tv',
+
+      /*
+       * Deno JavaScript runtime
+       */
+      '--js-runtimes',
+      'deno:/usr/local/bin/deno',
+
+      /*
+       * Explicit EJS component source
+       */
+      '--remote-components',
+      'ejs:npm',
+
       '--format',
       'bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b',
 
@@ -141,26 +160,17 @@ function runYtDlp({
       '--output',
       outputPath,
 
-      /*
-       * YouTube EJS challenge solver
-       * Deno is installed in the Render container.
-       */
-      '--js-runtimes',
-      'deno:/usr/local/bin/deno',
-
-      /*
-       * Fetch yt-dlp-ejs from npm.
-       */
-      '--remote-components',
-      'ejs:npm',
-
       url
     ];
 
     console.log(
       '[youtube] running yt-dlp:',
-      ytDlpPath,
-      args
+      ytDlpPath
+    );
+
+    console.log(
+      '[youtube] extractor:',
+      'youtube:player_client=tv'
     );
 
     const child = spawn(
@@ -208,31 +218,31 @@ function runYtDlp({
 
     child.stdout.on(
       'data',
-      (chunk) => {
+      chunk => {
         stdout += chunk.toString();
 
-        if (stdout.length > 4000) {
-          stdout = stdout.slice(-4000);
+        if (stdout.length > 8000) {
+          stdout = stdout.slice(-8000);
         }
       }
     );
 
     child.stderr.on(
       'data',
-      (chunk) => {
+      chunk => {
         stderr += chunk.toString();
 
-        if (stderr.length > 16000) {
-          stderr = stderr.slice(-16000);
+        if (stderr.length > 20000) {
+          stderr = stderr.slice(-20000);
         }
       }
     );
 
     child.on(
       'error',
-      (error) => {
+      error => {
         console.error(
-          '[youtube] yt-dlp spawn error:',
+          '[youtube] spawn error:',
           error.message
         );
 
@@ -249,7 +259,7 @@ function runYtDlp({
 
     child.on(
       'close',
-      (code) => {
+      code => {
         if (settled) {
           return;
         }
@@ -262,7 +272,7 @@ function runYtDlp({
             '[youtube] yt-dlp failed:',
             JSON.stringify({
               code,
-              stderr: stderr.slice(-10000)
+              stderr: stderr.slice(-12000)
             })
           );
 
@@ -271,8 +281,7 @@ function runYtDlp({
 
           if (
             lower.includes('private video') ||
-            lower.includes('login required') ||
-            lower.includes('sign in')
+            lower.includes('login required')
           ) {
             message =
               'This YouTube video is private or requires sign-in.';
@@ -283,7 +292,7 @@ function runYtDlp({
             lower.includes('confirm your age')
           ) {
             message =
-              'This YouTube video is age-restricted and cannot be downloaded by this server.';
+              'This YouTube video is age-restricted.';
           }
 
           else if (
@@ -296,13 +305,12 @@ function runYtDlp({
           }
 
           else if (
-            lower.includes('automated queries') ||
             lower.includes('sign in to confirm') ||
             lower.includes('unusual traffic') ||
-            lower.includes('bot')
+            lower.includes('automated queries')
           ) {
             message =
-              'YouTube blocked this server request. Please try again later.';
+              'YouTube is blocking this server request. Please try again later.';
           }
 
           else if (
@@ -314,14 +322,13 @@ function runYtDlp({
           }
 
           else if (
-            lower.includes('javascript runtime') ||
-            lower.includes('javascript interpreter') ||
-            lower.includes('ejs') ||
             lower.includes('player response') ||
+            lower.includes('ejs') ||
+            lower.includes('javascript') ||
             lower.includes('challenge')
           ) {
             message =
-              'YouTube player verification failed. Please try again after the latest backend deployment.';
+              'YouTube player verification failed. The server needs the latest yt-dlp/EJS components.';
           }
 
           finish(
