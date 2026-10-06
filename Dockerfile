@@ -1,6 +1,8 @@
 FROM node:20-bookworm-slim
 
-# FFmpeg + required tools
+# ==========================================
+# System packages
+# ==========================================
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -10,35 +12,50 @@ RUN apt-get update && \
     unzip && \
     rm -rf /var/lib/apt/lists/*
 
+# ==========================================
 # Install latest yt-dlp
-RUN curl -L \
+# ==========================================
+RUN curl -fL \
     https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
     -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp && \
     yt-dlp --version
 
+# ==========================================
 # Install Deno JavaScript runtime
-RUN curl -fsSL \
-    https://dl.deno.land/release/latest/deno-x86_64-unknown-linux-gnu.zip \
-    -o /tmp/deno.zip && \
-    unzip -q /tmp/deno.zip -d /usr/local/bin && \
+# Required by yt-dlp for modern YouTube
+# ==========================================
+RUN curl -fsSL https://deno.land/install.sh | \
+    DENO_INSTALL=/usr/local sh && \
     chmod a+rx /usr/local/bin/deno && \
-    rm -f /tmp/deno.zip && \
     deno --version
 
+# ==========================================
+# Application
+# ==========================================
 WORKDIR /app
 
-# Install Node dependencies first for Docker cache
+# Install Node dependencies first
+# for better Docker layer caching
 COPY package*.json ./
 
 RUN npm install --omit=dev
 
-# Copy application
+# Copy application source
 COPY . .
 
+# ==========================================
+# Environment
+# ==========================================
 ENV NODE_ENV=production
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
 
+# ==========================================
+# Render port
+# ==========================================
 EXPOSE 10000
 
+# ==========================================
+# Start backend
+# ==========================================
 CMD ["node", "server.js"]
