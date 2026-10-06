@@ -103,12 +103,11 @@ function runYtDlp({
   timeoutMs
 }) {
   return new Promise((resolve, reject) => {
-    const maxSize =
-      Math.max(
-        1,
-        Number(maxBytes) ||
-          500 * 1024 * 1024
-      );
+    const maxSize = Math.max(
+      1,
+      Number(maxBytes) ||
+        500 * 1024 * 1024
+    );
 
     const args = [
       '--no-playlist',
@@ -133,10 +132,6 @@ function runYtDlp({
       '--max-filesize',
       String(maxSize),
 
-      /*
-       * Prefer MP4 when available.
-       * Otherwise use best available video/audio.
-       */
       '--format',
       'bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b',
 
@@ -147,25 +142,25 @@ function runYtDlp({
       outputPath,
 
       /*
-       * YouTube JavaScript challenge solving.
-       * Deno is installed in Docker at this path.
+       * YouTube EJS challenge solver
+       * Deno is installed in the Render container.
        */
       '--js-runtimes',
       'deno:/usr/local/bin/deno',
 
       /*
-       * Allow yt-dlp to fetch the current
-       * external EJS challenge solver from GitHub.
+       * Fetch yt-dlp-ejs from npm.
        */
       '--remote-components',
-      'ejs:github',
+      'ejs:npm',
 
       url
     ];
 
     console.log(
       '[youtube] running yt-dlp:',
-      ytDlpPath
+      ytDlpPath,
+      args
     );
 
     const child = spawn(
@@ -190,29 +185,26 @@ function runYtDlp({
       }
 
       settled = true;
-
       clearTimeout(timer);
-
       fn(value);
     };
 
-    const timer =
-      setTimeout(() => {
-        console.error(
-          '[youtube] download timeout'
-        );
+    const timer = setTimeout(() => {
+      console.error(
+        '[youtube] download timeout'
+      );
 
-        child.kill('SIGKILL');
+      child.kill('SIGKILL');
 
-        finish(
-          reject,
-          new ValidationError(
-            'YOUTUBE_TIMEOUT',
-            'YouTube download timed out. Please try a shorter video.',
-            504
-          )
-        );
-      }, timeoutMs);
+      finish(
+        reject,
+        new ValidationError(
+          'YOUTUBE_TIMEOUT',
+          'YouTube download timed out. Please try a shorter video.',
+          504
+        )
+      );
+    }, timeoutMs);
 
     child.stdout.on(
       'data',
@@ -220,8 +212,7 @@ function runYtDlp({
         stdout += chunk.toString();
 
         if (stdout.length > 4000) {
-          stdout =
-            stdout.slice(-4000);
+          stdout = stdout.slice(-4000);
         }
       }
     );
@@ -232,8 +223,7 @@ function runYtDlp({
         stderr += chunk.toString();
 
         if (stderr.length > 16000) {
-          stderr =
-            stderr.slice(-16000);
+          stderr = stderr.slice(-16000);
         }
       }
     );
@@ -272,8 +262,7 @@ function runYtDlp({
             '[youtube] yt-dlp failed:',
             JSON.stringify({
               code,
-              stderr:
-                stderr.slice(-8000)
+              stderr: stderr.slice(-10000)
             })
           );
 
@@ -281,83 +270,58 @@ function runYtDlp({
             'Could not download this YouTube video.';
 
           if (
-            lower.includes(
-              'private video'
-            ) ||
-            lower.includes(
-              'login required'
-            ) ||
-            lower.includes(
-              'sign in'
-            )
+            lower.includes('private video') ||
+            lower.includes('login required') ||
+            lower.includes('sign in')
           ) {
             message =
               'This YouTube video is private or requires sign-in.';
-          } else if (
-            lower.includes(
-              'age-restricted'
-            ) ||
-            lower.includes(
-              'confirm your age'
-            )
+          }
+
+          else if (
+            lower.includes('age-restricted') ||
+            lower.includes('confirm your age')
           ) {
             message =
               'This YouTube video is age-restricted and cannot be downloaded by this server.';
-          } else if (
-            lower.includes(
-              'video unavailable'
-            ) ||
-            lower.includes(
-              'video is unavailable'
-            ) ||
-            lower.includes(
-              'this video is not available'
-            )
+          }
+
+          else if (
+            lower.includes('video unavailable') ||
+            lower.includes('video is unavailable') ||
+            lower.includes('this video is not available')
           ) {
             message =
               'This YouTube video is unavailable.';
-          } else if (
-            lower.includes(
-              'automated queries'
-            ) ||
-            lower.includes(
-              'sign in to confirm'
-            ) ||
-            lower.includes(
-              'unusual traffic'
-            ) ||
-            lower.includes(
-              'bot'
-            )
+          }
+
+          else if (
+            lower.includes('automated queries') ||
+            lower.includes('sign in to confirm') ||
+            lower.includes('unusual traffic') ||
+            lower.includes('bot')
           ) {
             message =
               'YouTube blocked this server request. Please try again later.';
-          } else if (
-            lower.includes(
-              'max-filesize'
-            ) ||
-            lower.includes(
-              'larger than'
-            )
+          }
+
+          else if (
+            lower.includes('max-filesize') ||
+            lower.includes('larger than')
           ) {
             message =
               'The YouTube video is larger than the 500 MB limit.';
-          } else if (
-            lower.includes(
-              'javascript runtime'
-            ) ||
-            lower.includes(
-              'javascript interpreter'
-            ) ||
-            lower.includes(
-              'ejs'
-            ) ||
-            lower.includes(
-              'player response'
-            )
+          }
+
+          else if (
+            lower.includes('javascript runtime') ||
+            lower.includes('javascript interpreter') ||
+            lower.includes('ejs') ||
+            lower.includes('player response') ||
+            lower.includes('challenge')
           ) {
             message =
-              'YouTube player verification failed. Please redeploy the latest backend and try again.';
+              'YouTube player verification failed. Please try again after the latest backend deployment.';
           }
 
           finish(
@@ -422,13 +386,11 @@ async function downloadYouTube({
     console.log(
       '[youtube] starting download',
       {
-        binary:
-          ytDlpPath,
-        url:
-          cleanUrl.replace(
-            /([?&]v=)[^&]+/,
-            '$1[redacted]'
-          )
+        binary: ytDlpPath,
+        url: cleanUrl.replace(
+          /([?&]v=)[^&]+/,
+          '$1[redacted]'
+        )
       }
     );
 
@@ -469,24 +431,17 @@ async function downloadYouTube({
     console.log(
       '[youtube] download complete',
       {
-        sizeBytes:
-          stat.size
+        sizeBytes: stat.size
       }
     );
 
     return {
-      path:
-        outputPath,
-
-      filename:
-        fileName,
-
-      size:
-        stat.size,
-
-      url:
-        cleanUrl
+      path: outputPath,
+      filename: fileName,
+      size: stat.size,
+      url: cleanUrl
     };
+
   } catch (error) {
     await fs.promises
       .rm(
@@ -495,9 +450,7 @@ async function downloadYouTube({
           force: true
         }
       )
-      .catch(
-        () => {}
-      );
+      .catch(() => {});
 
     throw error;
   }
