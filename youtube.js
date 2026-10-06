@@ -46,7 +46,10 @@ function validateYouTubeUrl(value) {
   }
 
   if (host.includes('youtu.be')) {
-    const id = url.pathname.split('/').filter(Boolean)[0] || '';
+    const id =
+      url.pathname
+        .split('/')
+        .filter(Boolean)[0] || '';
 
     if (id.length < 6) {
       throw new ValidationError(
@@ -100,12 +103,11 @@ function runYtDlp({
   timeoutMs
 }) {
   return new Promise((resolve, reject) => {
-
     const maxSize =
       Math.max(
         1,
         Number(maxBytes) ||
-        500 * 1024 * 1024
+          500 * 1024 * 1024
       );
 
     const args = [
@@ -131,6 +133,10 @@ function runYtDlp({
       '--max-filesize',
       String(maxSize),
 
+      /*
+       * Prefer MP4 when available.
+       * Otherwise use best available video/audio.
+       */
       '--format',
       'bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b',
 
@@ -141,24 +147,25 @@ function runYtDlp({
       outputPath,
 
       /*
-       * YouTube currently requires a JS runtime
-       * for many player clients.
-       *
-       * Deno is installed by the Dockerfile.
+       * YouTube JavaScript challenge solving.
+       * Deno is installed in Docker at this path.
        */
       '--js-runtimes',
       'deno:/usr/local/bin/deno',
+
+      /*
+       * Allow yt-dlp to fetch the current
+       * external EJS challenge solver from GitHub.
+       */
+      '--remote-components',
+      'ejs:github',
 
       url
     ];
 
     console.log(
       '[youtube] running yt-dlp:',
-      ytDlpPath,
-      args.filter(
-        (x) =>
-          x !== url
-      )
+      ytDlpPath
     );
 
     const child = spawn(
@@ -178,7 +185,9 @@ function runYtDlp({
     let settled = false;
 
     const finish = (fn, value) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
 
       settled = true;
 
@@ -189,7 +198,6 @@ function runYtDlp({
 
     const timer =
       setTimeout(() => {
-
         console.error(
           '[youtube] download timeout'
         );
@@ -204,49 +212,35 @@ function runYtDlp({
             504
           )
         );
-
       }, timeoutMs);
 
     child.stdout.on(
       'data',
       (chunk) => {
+        stdout += chunk.toString();
 
-        stdout +=
-          chunk.toString();
-
-        if (
-          stdout.length >
-          4000
-        ) {
+        if (stdout.length > 4000) {
           stdout =
             stdout.slice(-4000);
         }
-
       }
     );
 
     child.stderr.on(
       'data',
       (chunk) => {
+        stderr += chunk.toString();
 
-        stderr +=
-          chunk.toString();
-
-        if (
-          stderr.length >
-          12000
-        ) {
+        if (stderr.length > 16000) {
           stderr =
-            stderr.slice(-12000);
+            stderr.slice(-16000);
         }
-
       }
     );
 
     child.on(
       'error',
       (error) => {
-
         console.error(
           '[youtube] yt-dlp spawn error:',
           error.message
@@ -260,27 +254,26 @@ function runYtDlp({
             503
           )
         );
-
       }
     );
 
     child.on(
       'close',
       (code) => {
-
-        if (settled) return;
+        if (settled) {
+          return;
+        }
 
         if (code !== 0) {
-
           const lower =
             stderr.toLowerCase();
 
           console.error(
-            '[youtube] yt-dlp failed',
+            '[youtube] yt-dlp failed:',
             JSON.stringify({
               code,
               stderr:
-                stderr.slice(-5000)
+                stderr.slice(-8000)
             })
           );
 
@@ -292,16 +285,14 @@ function runYtDlp({
               'private video'
             ) ||
             lower.includes(
-              'sign in'
+              'login required'
             ) ||
             lower.includes(
-              'login required'
+              'sign in'
             )
           ) {
-
             message =
               'This YouTube video is private or requires sign-in.';
-
           } else if (
             lower.includes(
               'age-restricted'
@@ -310,10 +301,8 @@ function runYtDlp({
               'confirm your age'
             )
           ) {
-
             message =
               'This YouTube video is age-restricted and cannot be downloaded by this server.';
-
           } else if (
             lower.includes(
               'video unavailable'
@@ -325,10 +314,8 @@ function runYtDlp({
               'this video is not available'
             )
           ) {
-
             message =
               'This YouTube video is unavailable.';
-
           } else if (
             lower.includes(
               'automated queries'
@@ -337,13 +324,14 @@ function runYtDlp({
               'sign in to confirm'
             ) ||
             lower.includes(
+              'unusual traffic'
+            ) ||
+            lower.includes(
               'bot'
             )
           ) {
-
             message =
               'YouTube blocked this server request. Please try again later.';
-
           } else if (
             lower.includes(
               'max-filesize'
@@ -352,10 +340,8 @@ function runYtDlp({
               'larger than'
             )
           ) {
-
             message =
               'The YouTube video is larger than the 500 MB limit.';
-
           } else if (
             lower.includes(
               'javascript runtime'
@@ -365,12 +351,13 @@ function runYtDlp({
             ) ||
             lower.includes(
               'ejs'
+            ) ||
+            lower.includes(
+              'player response'
             )
           ) {
-
             message =
-              'YouTube download requires the server JavaScript runtime. Please redeploy the latest backend.';
-
+              'YouTube player verification failed. Please redeploy the latest backend and try again.';
           }
 
           finish(
@@ -392,7 +379,6 @@ function runYtDlp({
             stderr
           }
         );
-
       }
     );
   });
@@ -404,7 +390,6 @@ async function downloadYouTube({
   maxBytes,
   timeoutMs
 }) {
-
   const cleanUrl =
     validateYouTubeUrl(url);
 
@@ -431,7 +416,6 @@ async function downloadYouTube({
   );
 
   try {
-
     const ytDlpPath =
       resolveYtDlpPath();
 
@@ -465,25 +449,21 @@ async function downloadYouTube({
       !stat.isFile() ||
       stat.size <= 0
     ) {
-
       throw new ValidationError(
         'YOUTUBE_EMPTY',
         'YouTube download completed but produced no video file.',
         422
       );
-
     }
 
     if (
       stat.size > maxBytes
     ) {
-
       throw new ValidationError(
         'FILE_TOO_LARGE',
         'The downloaded YouTube video exceeds the 500 MB limit.',
         413
       );
-
     }
 
     console.log(
@@ -507,9 +487,7 @@ async function downloadYouTube({
       url:
         cleanUrl
     };
-
   } catch (error) {
-
     await fs.promises
       .rm(
         outputPath,
