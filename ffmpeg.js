@@ -22,6 +22,7 @@ function createFfmpeg(cfg) {
     } = {}
   ) {
     return new Promise((resolve, reject) => {
+
       let child;
 
       try {
@@ -48,18 +49,23 @@ function createFfmpeg(cfg) {
       const timer =
         timeoutMs > 0
           ? setTimeout(() => {
+
               timedOut = true;
 
               try {
                 child.kill('SIGKILL');
               } catch (_) {}
+
             }, timeoutMs)
           : null;
 
       child.stdout.on('data', (d) => {
-        const text = d.toString('utf8');
+
+        const text =
+          d.toString('utf8');
 
         if (onStdoutLine) {
+
           lineBuf += text;
 
           let i;
@@ -67,6 +73,7 @@ function createFfmpeg(cfg) {
           while (
             (i = lineBuf.indexOf('\n')) >= 0
           ) {
+
             const line =
               lineBuf
                 .slice(0, i)
@@ -76,33 +83,41 @@ function createFfmpeg(cfg) {
               lineBuf.slice(i + 1);
 
             if (line) {
+
               try {
                 onStdoutLine(line);
               } catch (_) {}
+
             }
           }
 
           if (lineBuf.length > 4096) {
             lineBuf = '';
           }
+
         } else {
+
           if (
             stdout.length <
             1024 * 1024
           ) {
             stdout += text;
           }
+
         }
       });
 
       child.stderr.on('data', (d) => {
+
         stderr = (
           stderr +
           d.toString('utf8')
         ).slice(-8000);
+
       });
 
       child.on('error', (e) => {
+
         if (timer) {
           clearTimeout(timer);
         }
@@ -122,9 +137,11 @@ function createFfmpeg(cfg) {
             e.message
           )
         );
+
       });
 
       child.on('close', (code) => {
+
         if (timer) {
           clearTimeout(timer);
         }
@@ -136,12 +153,14 @@ function createFfmpeg(cfg) {
         settled = true;
 
         if (timedOut) {
+
           return reject(
             codeError(
               'TIMEOUT',
               'Process timed out'
             )
           );
+
         }
 
         resolve({
@@ -149,7 +168,9 @@ function createFfmpeg(cfg) {
           stdout,
           stderr
         });
+
       });
+
     });
   }
 
@@ -167,6 +188,7 @@ function createFfmpeg(cfg) {
     };
 
     try {
+
       const r =
         await run(
           cfg.ffmpegPath,
@@ -184,14 +206,14 @@ function createFfmpeg(cfg) {
           .exec(r.stdout);
 
       if (m) {
-        result.version =
-          m[1];
+        result.version = m[1];
       }
 
     } catch (_) {}
 
 
     try {
+
       const r =
         await run(
           cfg.ffprobePath,
@@ -269,18 +291,20 @@ function createFfmpeg(cfg) {
     let data;
 
     try {
+
       data =
         JSON.parse(
           res.stdout
         );
+
     } catch (_) {
+
       throw invalid();
+
     }
 
     const streams =
-      Array.isArray(
-        data.streams
-      )
+      Array.isArray(data.streams)
         ? data.streams
         : [];
 
@@ -296,11 +320,13 @@ function createFfmpeg(cfg) {
       );
 
     if (!video) {
+
       throw new ValidationError(
         'NO_VIDEO_STREAM',
         'The file contains no video track.',
         422
       );
+
     }
 
     const fmt =
@@ -318,14 +344,17 @@ function createFfmpeg(cfg) {
       ) ||
       durationSec <= 0
     ) {
+
       throw new ValidationError(
         'UNKNOWN_DURATION',
         'Could not determine the video length.',
         422
       );
+
     }
 
     return {
+
       formatName:
         String(
           fmt.format_name || ''
@@ -365,15 +394,12 @@ function createFfmpeg(cfg) {
     resolution
   ) {
 
-    const height =
-      resolution === '1080p'
-        ? 1920
-        : 1280;
-
     if (
       aspect === '16:9'
     ) {
+
       return {
+
         width:
           resolution === '1080p'
             ? 1920
@@ -383,13 +409,17 @@ function createFfmpeg(cfg) {
           resolution === '1080p'
             ? 1080
             : 720
+
       };
     }
+
 
     if (
       aspect === '1:1'
     ) {
+
       return {
+
         width:
           resolution === '1080p'
             ? 1080
@@ -399,24 +429,31 @@ function createFfmpeg(cfg) {
           resolution === '1080p'
             ? 1080
             : 720
+
       };
     }
+
 
     // Default = 9:16
 
     return {
+
       width:
         resolution === '1080p'
           ? 1080
           : 720,
 
-      height
+      height:
+        resolution === '1080p'
+          ? 1920
+          : 1280
+
     };
   }
 
 
   // ==========================================================
-  // BUILD FFMPEG TRANSCODE
+  // BUILD ULTRA-FAST FFMPEG TRANSCODE
   // ==========================================================
 
   function buildTranscodeArgs({
@@ -429,10 +466,7 @@ function createFfmpeg(cfg) {
   }) {
 
     /*
-     * High-quality center crop.
-     *
-     * scale keeps the source large enough,
-     * crop creates exact output dimensions.
+     * Center crop + resize.
      */
 
     const vf =
@@ -448,19 +482,29 @@ function createFfmpeg(cfg) {
 
       '-y',
 
-      // Error output only
+      /*
+       * Minimal logging.
+       */
+
       '-loglevel',
       'error',
 
-      // Real-time progress
+      /*
+       * Progress.
+       */
+
       '-progress',
       'pipe:1',
 
       '-nostats',
 
       /*
-       * Fast seeking
+       * FAST SEEK
+       *
+       * -ss before -i allows FFmpeg
+       * to seek quickly.
        */
+
       '-ss',
       Number(
         startSec
@@ -474,65 +518,89 @@ function createFfmpeg(cfg) {
         durationSec
       ).toFixed(3),
 
-      // Video
+      /*
+       * Video stream.
+       */
+
       '-map',
       '0:v:0',
 
-      // Audio if available
+      /*
+       * Audio if available.
+       */
+
       '-map',
       '0:a:0?',
 
-      // Crop / resize
+      /*
+       * Resize / crop.
+       */
+
       '-vf',
       vf,
 
-      // H264
+      /*
+       * H.264
+       */
+
       '-c:v',
       'libx264',
 
       /*
        * ======================================================
-       * FAST MODE
+       * ULTRA FAST
        * ======================================================
        *
-       * Render environment:
+       * Render:
        *
-       * FFMPEG_PRESET=veryfast
-       * FFMPEG_CRF=20
-       *
-       * Falls back to veryfast / 20 if env is missing.
+       * FFMPEG_PRESET=ultrafast
+       * FFMPEG_CRF=18
        */
 
       '-preset',
       cfg.ffmpegPreset ||
-        'veryfast',
+        'ultrafast',
+
+      /*
+       * Quality target.
+       *
+       * CRF 18 = high quality.
+       */
 
       '-crf',
       String(
-        cfg.ffmpegCrf || 20
+        cfg.ffmpegCrf || 18
       ),
+
+      /*
+       * Compatibility.
+       */
 
       '-pix_fmt',
       'yuv420p',
 
-      // Audio
+      /*
+       * Audio.
+       *
+       * AAC encoding is relatively light.
+       */
+
       '-c:a',
       'aac',
 
       '-b:a',
       '192k',
 
-      // Web playback
+      /*
+       * Fast web playback.
+       */
+
       '-movflags',
       '+faststart',
 
       /*
-       * ======================================================
-       * CPU THREADS
-       * ======================================================
-       *
-       * 0 = FFmpeg automatically chooses
-       * the best available thread count.
+       * Let FFmpeg automatically
+       * select available CPU threads.
        */
 
       '-threads',
@@ -540,7 +608,10 @@ function createFfmpeg(cfg) {
         cfg.ffmpegThreads || 0
       ),
 
-      // MP4
+      /*
+       * MP4.
+       */
+
       '-f',
       'mp4',
 
@@ -581,15 +652,18 @@ function createFfmpeg(cfg) {
       throw bad(
         'Output missing'
       );
+
     }
 
     if (
       !st.isFile() ||
       st.size <= 0
     ) {
+
       throw bad(
         'Output empty'
       );
+
     }
 
     let info;
@@ -604,25 +678,30 @@ function createFfmpeg(cfg) {
       throw bad(
         'Output unreadable'
       );
+
     }
 
     if (
       info.videoCodec !==
       'h264'
     ) {
+
       throw bad(
         'Codec ' +
         info.videoCodec
       );
+
     }
 
     if (
       info.width !== width ||
       info.height !== height
     ) {
+
       throw bad(
         `Size ${info.width}x${info.height}`
       );
+
     }
 
     if (
@@ -635,19 +714,20 @@ function createFfmpeg(cfg) {
         expectedSec * 0.1
       )
     ) {
+
       throw bad(
         `Duration ${info.durationSec} vs ${expectedSec}`
       );
+
     }
 
     /*
-     * IMPORTANT:
-     *
-     * Full decode verification can consume
-     * additional CPU/time on Render.
+     * ========================================================
+     * OPTIONAL FULL DECODE VERIFICATION
+     * ========================================================
      *
      * VERIFY_DECODE=false
-     * is recommended for FAST mode.
+     * is fastest.
      */
 
     if (
@@ -664,6 +744,7 @@ function createFfmpeg(cfg) {
 
             [
               '-hide_banner',
+
               '-nostdin',
 
               '-v',
@@ -692,16 +773,19 @@ function createFfmpeg(cfg) {
         throw bad(
           'Decode check could not run'
         );
+
       }
 
       if (
         r.code !== 0 ||
         r.stderr.trim()
       ) {
+
         throw bad(
           'Decode errors: ' +
           r.stderr.slice(-500)
         );
+
       }
     }
 
@@ -716,8 +800,10 @@ function createFfmpeg(cfg) {
 
       durationSec:
         Math.round(
-          info.durationSec * 100
+          info.durationSec *
+          100
         ) / 100
+
     };
   }
 
@@ -739,26 +825,38 @@ function createFfmpeg(cfg) {
 
     const args =
       buildTranscodeArgs({
+
         input,
+
         output,
+
         startSec,
+
         durationSec,
+
         width,
+
         height
+
       });
+
 
     const res =
       await run(
+
         cfg.ffmpegPath,
+
         args,
+
         {
+
           timeoutMs,
 
           onStdoutLine:
             (line) => {
 
               /*
-               * FFmpeg emits:
+               * FFmpeg progress:
                *
                * out_time_us=1234567
                * progress=continue
@@ -773,13 +871,13 @@ function createFfmpeg(cfg) {
                 onProgress
               ) {
 
-                const microseconds =
+                const value =
                   Number(
                     m[1]
                   );
 
                 const seconds =
-                  microseconds /
+                  value /
                   1000000;
 
                 const progress =
@@ -797,21 +895,30 @@ function createFfmpeg(cfg) {
         }
       );
 
+
     if (
       res.code !== 0
     ) {
+
       throw codeError(
         'FFMPEG_FAILED',
         'FFmpeg failed',
         res.stderr
       );
+
     }
 
+
     return verifyOutput(
+
       output,
+
       durationSec,
+
       width,
+
       height
+
     );
   }
 
