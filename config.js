@@ -55,44 +55,28 @@ function loadConfig(env = process.env) {
       ? env.CORS_ORIGINS.split(',')
       : DEFAULT_ORIGINS
   )
-    .map((s) =>
-      s.trim().replace(/\/+$/, '')
-    )
+    .map((s) => s.trim().replace(/\/+$/, ''))
     .filter(Boolean);
 
   return {
-    port:
-      int(
-        env.PORT,
-        10000,
-        1,
-        65535
-      ),
+    // Server
+    port: int(env.PORT, 10000, 1, 65535),
+    nodeEnv: env.NODE_ENV || 'production',
 
-    nodeEnv:
-      env.NODE_ENV ||
-      'development',
+    // Storage
+    dataDir: path.resolve(
+      env.DATA_DIR ||
+      path.join(os.tmpdir(), 'shortsmaker-data')
+    ),
 
-    dataDir:
-      path.resolve(
-        env.DATA_DIR ||
-        path.join(
-          os.tmpdir(),
-          'shortsmaker-data'
-        )
-      ),
-
+    // CORS
     corsOrigins,
 
-    publicBaseUrl:
-      (env.PUBLIC_BASE_URL || '')
-        .trim()
-        .replace(/\/+$/, ''),
+    publicBaseUrl: (env.PUBLIC_BASE_URL || '')
+      .trim()
+      .replace(/\/+$/, ''),
 
-    /*
-     * Maximum upload size:
-     * Default = 500 MB
-     */
+    // Upload limits
     maxUploadBytes:
       int(
         env.MAX_UPLOAD_MB,
@@ -108,6 +92,7 @@ function loadConfig(env = process.env) {
         5
       ),
 
+    // Clip limits
     maxClipSeconds:
       int(
         env.MAX_CLIP_SECONDS,
@@ -115,14 +100,17 @@ function loadConfig(env = process.env) {
         1
       ),
 
+    // IMPORTANT:
+    // Maximum clips = 10
     maxClipCount:
       int(
         env.MAX_CLIP_COUNT,
-        5,
+        10,
         1,
-        20
+        10
       ),
 
+    // Processing
     processTimeoutMs:
       int(
         env.PROCESS_TIMEOUT_SECONDS,
@@ -130,9 +118,19 @@ function loadConfig(env = process.env) {
         1
       ) * 1000,
 
+    // YouTube download timeout
+    youtubeDownloadTimeoutMs:
+      int(
+        env.YOUTUBE_DOWNLOAD_TIMEOUT_SECONDS,
+        1200,
+        60,
+        3600
+      ) * 1000,
+
     probeTimeoutMs:
       30 * 1000,
 
+    // Queue
     maxConcurrentJobs:
       int(
         env.MAX_CONCURRENT_JOBS,
@@ -144,11 +142,12 @@ function loadConfig(env = process.env) {
     maxQueuedJobs:
       int(
         env.MAX_QUEUED_JOBS,
-        10,
+        20,
         0,
         100
       ),
 
+    // Job cleanup
     jobTtlMs:
       int(
         env.JOB_TTL_MINUTES,
@@ -159,40 +158,23 @@ function loadConfig(env = process.env) {
     cleanupIntervalMs:
       5 * 60 * 1000,
 
+    // Rate limiting
     rateLimit: {
-      windowMs:
-        int(
-          env.RATE_LIMIT_WINDOW_MINUTES,
-          15,
-          1
-        ) * 60 * 1000,
+      windowMs: int(
+        env.RATE_LIMIT_WINDOW_MS,
+        15 * 60 * 1000,
+        1000
+      ),
 
-      max:
-        int(
-          env.RATE_LIMIT_MAX,
-          1000,
-          1
-        ),
-
-      uploadWindowMs:
-        int(
-          env.UPLOAD_RATE_LIMIT_WINDOW_MINUTES,
-          60,
-          1
-        ) * 60 * 1000,
-
-      uploadMax:
-        int(
-          env.UPLOAD_RATE_LIMIT_MAX,
-          20,
-          1
-        )
+      max: int(
+        env.RATE_LIMIT_MAX,
+        60,
+        1,
+        1000
+      )
     },
 
-    // ==============================
     // FFmpeg
-    // ==============================
-
     ffmpegPath:
       env.FFMPEG_PATH ||
       tryRequire('ffmpeg-static') ||
@@ -209,24 +191,33 @@ function loadConfig(env = process.env) {
     ffmpegThreads:
       int(
         env.FFMPEG_THREADS,
-        2,
-        1,
+        0,
+        0,
         16
       ),
 
+    ffmpegPreset:
+      env.FFMPEG_PRESET ||
+      'veryfast',
+
+    ffmpegCrf:
+      int(
+        env.FFMPEG_CRF,
+        20,
+        16,
+        30
+      ),
+
+    // Verification
     verifyDecode:
       bool(
         env.VERIFY_DECODE,
-        true
+        false
       ),
 
-    // ==============================
-    // Gemini AI Highlight Detection
-    // ==============================
-
+    // Gemini
     geminiApiKey:
-      (env.GEMINI_API_KEY || '')
-        .trim(),
+      (env.GEMINI_API_KEY || '').trim(),
 
     geminiModel:
       (
