@@ -319,7 +319,7 @@ async function startInitial(
         job.aspectRatio,
 
       durationSeconds:
-        '8',
+        8,
 
       resolution:
         '720p'
