@@ -1,686 +1,573 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const express = require('express');
 
 const jobs = new Map();
 
-function id() {
-  return crypto.randomUUID();
-}
-
-function token() {
-  return crypto.randomBytes(24).toString('hex');
-}
+const DATA_DIR = path.join(process.cwd(), 'data', 'animate');
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function safeAspect(value) {
-  return ['16:9', '9:16'].includes(value) ? value : '9:16';
+function makeToken() {
+  return crypto.randomBytes(24).toString('hex');
 }
 
-function buildPrompt(prompt, style) {
-  const styles = {
-    '2d-cartoon':
-      '2D animated cartoon style, expressive characters, smooth animation, colorful professional visuals.',
-
-    '3d-animation':
-      'high-quality 3D animated film style, polished characters, cinematic lighting, smooth motion.',
-
-    'anime':
-      'high-quality anime animation style, expressive characters, detailed backgrounds, smooth cinematic motion.',
-
-    'storybook':
-      'beautiful storybook animation, hand-painted look, gentle character motion, rich illustrated backgrounds.',
-
-    'cinematic':
-      'cinematic animated film style, dramatic composition, smooth camera movement, polished visuals.'
-  };
-
-  return [
-    String(prompt).trim(),
-    styles[style] || styles['3d-animation'],
-    'Create one coherent short animated scene.',
-    'Keep character appearance and environment consistent throughout the video.',
-    'No subtitles, no captions, no logos, no watermarks.'
-  ].join('\n\n');
+function safeText(value, fallback = '') {
+  return String(value ?? fallback).trim();
 }
 
-async function startGeneration({
-  apiKey,
-  model,
-  prompt,
-  aspectRatio
-}) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:predictLongRunning`,
-    {
-      method: 'POST',
-
-      headers: {
-        'x-goog-api-key': apiKey,
-        'Content-Type': 'application/json'
-      },
-
-      body: JSON.stringify({
-        instances: [
-          {
-            prompt
-          }
-        ],
-
-        parameters: {
-          aspectRatio,
-          resolution: '720p',
-          numberOfVideos: 1
-        }
-      })
-    }
-  );
-
-  const body = await response.text();
-
-  let data;
-
-  try {
-    data = JSON.parse(body);
-  } catch {
-    throw new Error(
-      `Video API returned invalid JSON (HTTP ${response.status})`
-    );
-  }
-
-  if (!response.ok || !data.name) {
-    throw new Error(
-      data?.error?.message ||
-      `Video generation request failed (HTTP ${response.status})`
-    );
-  }
-
-  return data.name;
+function clamp(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
 }
 
-async function pollGeneration({
-  apiKey,
-  operationName,
-  onProgress
-}) {
-  for (let i = 0; i < 180; i++) {
+function baseUrl(req) {
+  const configured =
+    process.env.PUBLIC_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/${operationName}`,
-      {
-        headers: {
-          'x-goog-api-key': apiKey
-        }
-      }
-    );
-
-    const body = await response.text();
-
-    let data;
-
-    try {
-      data = JSON.parse(body);
-    } catch {
-      throw new Error(
-        'Video API returned invalid status JSON'
-      );
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error?.message ||
-        `Video status failed (HTTP ${response.status})`
-      );
-    }
-
-    if (data.done) {
-
-      if (data.error) {
-        throw new Error(
-          data.error.message ||
-          'Video generation failed'
-        );
-      }
-
-      const sample =
-        data.response?.generateVideoResponse
-          ?.generatedSamples?.[0] ||
-        data.response?.generatedVideos?.[0];
-
-      const uri =
-        sample?.video?.uri;
-
-      const base64 =
-        sample?.video?.inlineData?.data ||
-        sample?.video?.videoBytes;
-
-      if (!uri && !base64) {
-        throw new Error(
-          'Video generation completed but no video was returned'
-        );
-      }
-
-      return {
-        uri,
-        base64
-      };
-    }
-
-    const percent = Number(
-      data.metadata?.progressPercent ??
-      data.metadata?.progress_percent ??
-      0
-    );
-
-    onProgress(
-      Math.max(
-        5,
-        Math.min(
-          94,
-          percent || 5
-        )
-      )
-    );
-
-    await sleep(10000);
+  if (configured) {
+    return configured.replace(/\/+$/, '');
   }
 
-  throw new Error(
-    'Video generation timed out'
-  );
+  const proto =
+    req.headers['x-forwarded-proto'] ||
+    req.protocol ||
+    'https';
+
+  const host =
+    req.headers['x-forwarded-host'] ||
+    req.get('host');
+
+  return `${proto}://${host}`;
 }
 
-async function saveVideo({
-  apiKey,
-  result,
-  output
-}) {
-  if (result.base64) {
+function publicJob(job, req) {
+  const base = baseUrl(req);
 
-    fs.writeFileSync(
-      output,
-      Buffer.from(
-        result.base64,
-        'base64'
-      )
-    );
+  // IMPORTANT:
+  // videoUrl is returned immediately so the current
+  // Blogger frontend can extract the token from it.
+  const videoUrl =
+    `${base}/api/animate/video/${encodeURIComponent(job.id)}` +
+    `?token=${encodeURIComponent(job.token)}`;
 
-    return;
-  }
+  const statusUrl =
+    `${base}/api/animate/status/${encodeURIComponent(job.id)}` +
+    `?token=${encodeURIComponent(job.token)}`;
 
-  const response = await fetch(
-    result.uri,
-    {
-      headers: {
-        'x-goog-api-key': apiKey
-      }
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `Video download failed (HTTP ${response.status})`
-    );
-  }
-
-  const buffer =
-    Buffer.from(
-      await response.arrayBuffer()
-    );
-
-  fs.writeFileSync(
-    output,
-    buffer
-  );
-}
-
-function publicJob(
-  job,
-  baseUrl
-) {
-  const result = {
+  return {
     jobId: job.id,
     status: job.status,
     stage: job.stage,
     progress: job.progress,
-
     prompt: job.prompt,
     style: job.style,
     aspectRatio: job.aspectRatio,
-
-    durationSec: 8,
-
+    durationSec: job.durationSec,
     createdAt: job.createdAt,
-    updatedAt: job.updatedAt
+    updatedAt: job.updatedAt,
+
+    // Available immediately.
+    videoUrl,
+    statusUrl
   };
-
-  if (job.status === 'completed') {
-    result.videoUrl =
-      `${baseUrl}/api/animate/video/${job.id}?token=${job.token}`;
-  }
-
-  if (job.status === 'failed') {
-    result.error = job.error;
-  }
-
-  return result;
 }
 
-function createAnimateRouter({
-  config
-}) {
-  const express =
-    require('express');
+function tokenFrom(req) {
+  return safeText(
+    req.headers['x-job-token'] ||
+    req.query.token ||
+    ''
+  );
+}
 
-  const router =
-    express.Router();
+function isAuthorized(job, req) {
+  const token = tokenFrom(req);
 
-  const dataDir =
-    path.resolve(
-      config.dataDir,
-      'animate'
-    );
+  if (!job || !token) {
+    return false;
+  }
 
-  fs.mkdirSync(
-    dataDir,
-    {
-      recursive: true
-    }
+  return crypto.timingSafeEqual(
+    Buffer.from(String(job.token)),
+    Buffer.from(String(token))
+  );
+}
+
+function updateJob(job, patch) {
+  Object.assign(job, patch, {
+    updatedAt: new Date().toISOString()
+  });
+}
+
+async function startVeoJob(job, config) {
+  const apiKey = safeText(
+    config?.geminiApiKey ||
+    process.env.GEMINI_API_KEY ||
+    ''
   );
 
-  // ------------------------------------
-  // GENERATE
-  // ------------------------------------
+  const model = safeText(
+    config?.veoModel ||
+    process.env.VEO_MODEL ||
+    'veo-3.1-generate-preview'
+  );
 
-  router.post(
-    '/generate',
-    express.json({
-      limit: '32kb'
-    }),
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured.');
+  }
 
-    async (
-      req,
-      res
-    ) => {
+  updateJob(job, {
+    status: 'processing',
+    stage: 'Starting AI',
+    progress: 5
+  });
 
-      const apiKey =
-        config.geminiApiKey;
+  const endpoint =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${encodeURIComponent(model)}:predictLongRunning`;
 
-      if (!apiKey) {
-        return res
-          .status(503)
-          .json({
-            error:
-              'Animation generation is not configured. Add GEMINI_API_KEY in Render.',
+  /*
+   * Keep the prompt useful for animation.
+   */
+  const finalPrompt = [
+    job.style
+      ? `Create this as a ${job.style} animation.`
+      : '',
+    job.aspectRatio === '9:16'
+      ? 'Use a vertical portrait composition, 9:16.'
+      : 'Use a horizontal landscape composition, 16:9.',
+    'Create a coherent animated video with smooth motion, consistent characters and objects, cinematic composition, detailed visuals and natural movement.',
+    job.prompt
+  ]
+    .filter(Boolean)
+    .join(' ');
 
-            code:
-              'AI_NOT_CONFIGURED'
-          });
+  updateJob(job, {
+    stage: 'Sending prompt to Veo',
+    progress: 10
+  });
+
+  const body = {
+    instances: [
+      {
+        prompt: finalPrompt
+      }
+    ],
+    parameters: {
+      aspectRatio: job.aspectRatio,
+      resolution: '720p',
+      numberOfVideos: 1
+    }
+  };
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
+    },
+    body: JSON.stringify(body)
+  });
+
+  const text = await response.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Veo returned invalid JSON (${response.status}).`
+    );
+  }
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      data?.message ||
+      `Veo API error (${response.status}).`;
+
+    throw new Error(message);
+  }
+
+  const operationName = data?.name;
+
+  if (!operationName) {
+    throw new Error(
+      'Veo did not return an operation name.'
+    );
+  }
+
+  updateJob(job, {
+    operationName,
+    stage: 'AI is generating video',
+    progress: 15
+  });
+
+  const pollUrl =
+    `https://generativelanguage.googleapis.com/v1beta/` +
+    operationName.replace(/^\/+/, '');
+
+  const startedAt = Date.now();
+
+  // Maximum ~15 minutes.
+  const MAX_WAIT = 15 * 60 * 1000;
+
+  while (true) {
+    if (Date.now() - startedAt > MAX_WAIT) {
+      throw new Error(
+        'Video generation timed out. Please try again.'
+      );
+    }
+
+    await sleep(8000);
+
+    const pollResponse = await fetch(pollUrl, {
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey
+      }
+    });
+
+    const pollText = await pollResponse.text();
+
+    let operation;
+
+    try {
+      operation = JSON.parse(pollText);
+    } catch {
+      throw new Error(
+        `Veo status response was invalid (${pollResponse.status}).`
+      );
+    }
+
+    if (!pollResponse.ok) {
+      const message =
+        operation?.error?.message ||
+        `Veo polling failed (${pollResponse.status}).`;
+
+      throw new Error(message);
+    }
+
+    if (operation.done === true) {
+      /*
+       * Google Veo REST response:
+       *
+       * response
+       *   .generateVideoResponse
+       *   .generatedSamples[0]
+       *   .video
+       *   .uri
+       */
+      if (operation.error) {
+        throw new Error(
+          operation.error.message ||
+          'Veo generation failed.'
+        );
       }
 
-      const prompt =
-        String(
-          req.body?.prompt || ''
-        ).trim();
+      const videoUri =
+        operation?.response
+          ?.generateVideoResponse
+          ?.generatedSamples?.[0]
+          ?.video?.uri;
+
+      if (!videoUri) {
+        throw new Error(
+          'Veo completed but no video URL was returned.'
+        );
+      }
+
+      updateJob(job, {
+        stage: 'Downloading generated video',
+        progress: 90
+      });
+
+      const videoResponse = await fetch(videoUri, {
+        method: 'GET',
+        headers: {
+          'x-goog-api-key': apiKey
+        }
+      });
+
+      if (!videoResponse.ok) {
+        throw new Error(
+          `Generated video download failed (${videoResponse.status}).`
+        );
+      }
+
+      const outputPath =
+        path.join(DATA_DIR, `${job.id}.mp4`);
+
+      const buffer =
+        Buffer.from(await videoResponse.arrayBuffer());
+
+      if (!buffer.length) {
+        throw new Error(
+          'Generated video file is empty.'
+        );
+      }
+
+      fs.writeFileSync(outputPath, buffer);
+
+      updateJob(job, {
+        status: 'completed',
+        stage: 'Video ready',
+        progress: 100,
+        outputPath,
+        fileSize: buffer.length
+      });
+
+      return;
+    }
+
+    /*
+     * Operation is still running.
+     * Veo does not necessarily provide a precise percentage,
+     * so we show a smooth approximate progress indicator.
+     */
+    const elapsed = Date.now() - startedAt;
+
+    let progress = 20;
+
+    if (elapsed > 20 * 1000) progress = 30;
+    if (elapsed > 40 * 1000) progress = 40;
+    if (elapsed > 60 * 1000) progress = 50;
+    if (elapsed > 90 * 1000) progress = 60;
+    if (elapsed > 120 * 1000) progress = 68;
+    if (elapsed > 180 * 1000) progress = 75;
+    if (elapsed > 240 * 1000) progress = 82;
+
+    updateJob(job, {
+      stage: 'AI is generating video',
+      progress
+    });
+  }
+}
+
+function createAnimateRouter({ config }) {
+  const router = express.Router();
+
+  /*
+   * POST /api/animate/generate
+   */
+  router.post('/generate', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      const prompt = safeText(req.body?.prompt);
 
       const style =
-        String(
-          req.body?.style ||
-          '3d-animation'
-        );
+        safeText(
+          req.body?.style,
+          '3D Animation'
+        ) || '3D Animation';
 
       const aspectRatio =
-        safeAspect(
-          req.body?.aspectRatio
-        );
+        safeText(
+          req.body?.aspectRatio,
+          '9:16'
+        ) || '9:16';
 
-      if (prompt.length < 3) {
-        return res
-          .status(400)
-          .json({
-            error:
-              'Please enter a video prompt.',
-
-            code:
-              'PROMPT_REQUIRED'
-          });
+      if (!prompt) {
+        return res.status(400).json({
+          error: 'Prompt is required.'
+        });
       }
 
       if (prompt.length > 2000) {
-        return res
-          .status(400)
-          .json({
-            error:
-              'Prompt is too long. Maximum 2000 characters.',
-
-            code:
-              'PROMPT_TOO_LONG'
-          });
+        return res.status(400).json({
+          error: 'Prompt is too long. Maximum 2000 characters.'
+        });
       }
 
-      if (jobs.size >= 5) {
-        return res
-          .status(429)
-          .json({
-            error:
-              'Too many animation jobs are running.',
-
-            code:
-              'ANIMATION_QUEUE_FULL'
-          });
+      if (!['9:16', '16:9'].includes(aspectRatio)) {
+        return res.status(400).json({
+          error: 'Invalid aspect ratio.'
+        });
       }
+
+      const id =
+        `${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}`;
+
+      const token = makeToken();
 
       const job = {
+        id,
+        token,
 
-        id:
-          id(),
-
-        token:
-          token(),
+        status: 'queued',
+        stage: 'Starting AI',
+        progress: 1,
 
         prompt,
-
         style,
-
         aspectRatio,
 
-        status:
-          'queued',
+        // Veo 3.1 generates 8-second videos.
+        durationSec: 8,
 
-        stage:
-          'queued',
+        operationName: null,
+        outputPath: null,
+        fileSize: 0,
+        error: null,
 
-        progress:
-          0,
-
-        createdAt:
-          new Date().toISOString(),
-
-        updatedAt:
-          new Date().toISOString(),
-
-        error:
-          null
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
 
-      jobs.set(
-        job.id,
-        job
-      );
+      jobs.set(id, job);
 
-      const baseUrl =
-        config.publicBaseUrl ||
-        `${req.protocol}://${req.get('host')}`;
-
-      res
-        .status(202)
-        .json(
-          publicJob(
-            job,
-            baseUrl
-          )
+      /*
+       * Start processing without blocking the HTTP response.
+       */
+      startVeoJob(job, config).catch(error => {
+        console.error(
+          `[ANIMATE] Job ${job.id} failed:`,
+          error
         );
 
-      // Background processing
-      (async () => {
-
-        const output =
-          path.join(
-            dataDir,
-            `${job.id}.mp4`
-          );
-
-        try {
-
-          job.status =
-            'processing';
-
-          job.stage =
-            'starting';
-
-          job.progress =
-            3;
-
-          job.updatedAt =
-            new Date().toISOString();
-
-          const operationName =
-            await startGeneration({
-
-              apiKey,
-
-              model:
-                config.veoModel ||
-                'veo-3.1-generate-preview',
-
-              prompt:
-                buildPrompt(
-                  prompt,
-                  style
-                ),
-
-              aspectRatio
-            });
-
-          job.stage =
-            'generating';
-
-          job.progress =
-            5;
-
-          job.operationName =
-            operationName;
-
-          job.updatedAt =
-            new Date().toISOString();
-
-          const result =
-            await pollGeneration({
-
-              apiKey,
-
-              operationName,
-
-              onProgress:
-                progress => {
-
-                  job.progress =
-                    progress;
-
-                  job.updatedAt =
-                    new Date().toISOString();
-                }
-            });
-
-          job.stage =
-            'downloading';
-
-          job.progress =
-            96;
-
-          await saveVideo({
-
-            apiKey,
-
-            result,
-
-            output
-          });
-
-          job.file =
-            output;
-
-          job.stage =
-            'done';
-
-          job.status =
-            'completed';
-
-          job.progress =
-            100;
-
-          job.updatedAt =
-            new Date().toISOString();
-
-        } catch (error) {
-
-          console.error(
-            `[animate ${job.id}] failed:`,
-            error.message
-          );
-
-          job.status =
-            'failed';
-
-          job.stage =
-            'failed';
-
-          job.progress =
-            0;
-
-          job.error =
-            error.message;
-
-          job.updatedAt =
-            new Date().toISOString();
-
-          try {
-
-            if (
-              fs.existsSync(output)
-            ) {
-              fs.unlinkSync(output);
-            }
-
-          } catch (_) {}
-        }
-
-      })();
-    }
-  );
-
-  // ------------------------------------
-  // STATUS
-  // ------------------------------------
-
-  router.get(
-    '/status/:jobId',
-    (
-      req,
-      res
-    ) => {
-
-      const job =
-        jobs.get(
-          req.params.jobId
-        );
-
-      if (
-        !job ||
-        req.query.token !==
-        job.token
-      ) {
-        return res
-          .status(404)
-          .json({
-            error:
-              'Animation job not found.',
-
-            code:
-              'JOB_NOT_FOUND'
-          });
-      }
-
-      res.set(
-        'Cache-Control',
-        'no-store'
-      );
-
-      const baseUrl =
-        config.publicBaseUrl ||
-        `${req.protocol}://${req.get('host')}`;
-
-      res.json(
-        publicJob(
-          job,
-          baseUrl
-        )
-      );
-    }
-  );
-
-  // ------------------------------------
-  // VIDEO
-  // ------------------------------------
-
-  router.get(
-    '/video/:jobId',
-    (
-      req,
-      res
-    ) => {
-
-      const job =
-        jobs.get(
-          req.params.jobId
-        );
-
-      if (
-        !job ||
-        req.query.token !==
-        job.token
-      ) {
-        return res
-          .status(404)
-          .json({
-            error:
-              'Video not found.',
-
-            code:
-              'VIDEO_NOT_FOUND'
-          });
-      }
-
-      if (
-        job.status !==
-          'completed' ||
-        !job.file ||
-        !fs.existsSync(
-          job.file
-        )
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              'Video is not ready yet.',
-
-            code:
-              'VIDEO_NOT_READY'
-          });
-      }
-
-      res.set({
-        'Cache-Control':
-          'private, max-age=3600',
-
-        'Content-Type':
-          'video/mp4',
-
-        'Content-Disposition':
-          'inline; filename="animated-video.mp4"'
+        updateJob(job, {
+          status: 'failed',
+          stage: 'Generation failed',
+          progress: 100,
+          error:
+            error?.message ||
+            'Video generation failed.'
+        });
       });
 
-      res.sendFile(
-        job.file
+      /*
+       * IMPORTANT FIX:
+       * Return videoUrl immediately.
+       *
+       * The existing Blogger frontend expects:
+       * data.jobId
+       * data.videoUrl
+       *
+       * It extracts the token from videoUrl.
+       */
+      return res.status(202).json(
+        publicJob(job, req)
       );
+
+    } catch (error) {
+      console.error(
+        '[ANIMATE] Generate request failed:',
+        error
+      );
+
+      return res.status(500).json({
+        error:
+          error?.message ||
+          'Unable to start animation generation.'
+      });
     }
-  );
+  });
+
+  /*
+   * GET /api/animate/status/:jobId
+   */
+  router.get('/status/:jobId', (req, res) => {
+    const job = jobs.get(req.params.jobId);
+
+    if (!job) {
+      return res.status(404).json({
+        error: 'Animation job not found.'
+      });
+    }
+
+    if (!isAuthorized(job, req)) {
+      return res.status(403).json({
+        error: 'Invalid job token.'
+      });
+    }
+
+    const result = publicJob(job, req);
+
+    if (job.error) {
+      result.error = job.error;
+    }
+
+    return res.json(result);
+  });
+
+  /*
+   * GET /api/animate/video/:jobId
+   */
+  router.get('/video/:jobId', (req, res) => {
+    const job = jobs.get(req.params.jobId);
+
+    if (!job) {
+      return res.status(404).json({
+        error: 'Animation job not found.'
+      });
+    }
+
+    if (!isAuthorized(job, req)) {
+      return res.status(403).json({
+        error: 'Invalid job token.'
+      });
+    }
+
+    if (job.status !== 'completed' || !job.outputPath) {
+      return res.status(409).json({
+        error: 'Video is not ready yet.',
+        status: job.status,
+        stage: job.stage,
+        progress: job.progress
+      });
+    }
+
+    if (!fs.existsSync(job.outputPath)) {
+      return res.status(404).json({
+        error: 'Generated video file is no longer available.'
+      });
+    }
+
+    res.setHeader(
+      'Content-Type',
+      'video/mp4'
+    );
+
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="animato-${job.id}.mp4"`
+    );
+
+    res.setHeader(
+      'Cache-Control',
+      'private, max-age=3600'
+    );
+
+    return res.sendFile(
+      path.resolve(job.outputPath)
+    );
+  });
+
+  /*
+   * GET /api/animate/health
+   */
+  router.get('/health', (req, res) => {
+    return res.json({
+      status: 'ok',
+      feature: 'prompt-animation',
+      model:
+        safeText(
+          config?.veoModel ||
+          process.env.VEO_MODEL ||
+          'veo-3.1-generate-preview'
+        ),
+      jobs: jobs.size
+    });
+  });
 
   return router;
 }
