@@ -9,83 +9,47 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 
-/*
- * ============================================================
- * CONFIG
- * ============================================================
- */
-
 const jobs = new Map();
 
-const DATA_DIR =
-  path.join(process.cwd(), 'data', 'animate');
+const DATA_DIR = path.join(
+  process.cwd(),
+  'data',
+  'animate'
+);
 
 fs.mkdirSync(DATA_DIR, {
   recursive: true
 });
 
 
-/*
- * Veo 3.1:
- *
- * Initial generation = 8 seconds
- * Each extension = +7 seconds
- * Maximum extension count = 20
- * Maximum final duration = 148 seconds
- *
- * User requirement:
- * Minimum = 60 seconds
- */
+/* =========================================================
+   VEO SETTINGS
+========================================================= */
 
-const INITIAL_DURATION = 8;
+const MIN_DURATION = 60;
+const MAX_DURATION = 148;
+
+const INITIAL_SECONDS = 8;
 const EXTENSION_SECONDS = 7;
 const MAX_EXTENSIONS = 20;
-const MAX_DURATION = 148;
-const MIN_DURATION = 60;
 
 
-/*
- * ============================================================
- * HELPERS
- * ============================================================
- */
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function sleep(ms) {
-  return new Promise(resolve => {
-    setTimeout(resolve, ms);
-  });
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
-
 
 function safeText(value, fallback = '') {
-  const text =
-    String(value ?? fallback).trim();
-
-  return text || fallback;
+  const v = String(value ?? '').trim();
+  return v || fallback;
 }
-
 
 function makeToken() {
-  return crypto
-    .randomBytes(32)
-    .toString('hex');
+  return crypto.randomBytes(32).toString('hex');
 }
-
-
-function clamp(value, min, max) {
-  const number =
-    Number(value);
-
-  if (!Number.isFinite(number)) {
-    return min;
-  }
-
-  return Math.max(
-    min,
-    Math.min(max, number)
-  );
-}
-
 
 function baseUrl(req) {
 
@@ -109,7 +73,6 @@ function baseUrl(req) {
   return `${proto}://${host}`;
 }
 
-
 function tokenFrom(req) {
 
   return safeText(
@@ -119,21 +82,16 @@ function tokenFrom(req) {
   );
 }
 
+function authorized(job, req) {
 
-function isAuthorized(job, req) {
-
-  const token =
-    tokenFrom(req);
+  const token = tokenFrom(req);
 
   if (!job || !token) {
     return false;
   }
 
-  const a =
-    Buffer.from(String(job.token));
-
-  const b =
-    Buffer.from(String(token));
+  const a = Buffer.from(String(job.token));
+  const b = Buffer.from(String(token));
 
   if (a.length !== b.length) {
     return false;
@@ -142,30 +100,22 @@ function isAuthorized(job, req) {
   return crypto.timingSafeEqual(a, b);
 }
 
+function updateJob(job, data) {
 
-function updateJob(job, patch) {
+  Object.assign(job, data);
 
-  Object.assign(
-    job,
-    patch,
-    {
-      updatedAt:
-        new Date().toISOString()
-    }
-  );
+  job.updatedAt =
+    new Date().toISOString();
 }
 
 
-/*
- * ============================================================
- * PUBLIC JOB RESPONSE
- * ============================================================
- */
+/* =========================================================
+   PUBLIC JOB
+========================================================= */
 
 function publicJob(job, req) {
 
-  const base =
-    baseUrl(req);
+  const base = baseUrl(req);
 
   const videoUrl =
     `${base}/api/animate/video/` +
@@ -181,26 +131,19 @@ function publicJob(job, req) {
 
     jobId: job.id,
 
-    status:
-      job.status,
+    status: job.status,
 
-    stage:
-      job.stage,
+    stage: job.stage,
 
-    progress:
-      job.progress,
+    progress: job.progress,
 
-    prompt:
-      job.prompt,
+    prompt: job.prompt,
 
-    style:
-      job.style,
+    style: job.style,
 
-    aspectRatio:
-      job.aspectRatio,
+    aspectRatio: job.aspectRatio,
 
-    durationSec:
-      job.durationSec,
+    durationSec: job.durationSec,
 
     generatedDurationSec:
       job.generatedDurationSec || 0,
@@ -211,31 +154,22 @@ function publicJob(job, req) {
     totalExtensions:
       job.totalExtensions || 0,
 
-    createdAt:
-      job.createdAt,
-
-    updatedAt:
-      job.updatedAt,
-
-    /*
-     * IMPORTANT:
-     * Frontend receives this immediately.
-     */
     videoUrl,
 
     statusUrl,
 
-    error:
-      job.error || null
+    createdAt: job.createdAt,
+
+    updatedAt: job.updatedAt,
+
+    error: job.error || null
   };
 }
 
 
-/*
- * ============================================================
- * API KEY / MODEL
- * ============================================================
- */
+/* =========================================================
+   API
+========================================================= */
 
 function getApiKey(config) {
 
@@ -246,7 +180,6 @@ function getApiKey(config) {
   );
 }
 
-
 function getModel(config) {
 
   return safeText(
@@ -256,34 +189,15 @@ function getModel(config) {
   );
 }
 
-
-/*
- * ============================================================
- * GEMINI / VEO API
- * ============================================================
- */
-
-const GEMINI_BASE =
+const API_BASE =
   'https://generativelanguage.googleapis.com/v1beta';
 
 
-function generationEndpoint(model) {
+/* =========================================================
+   GOOGLE REQUEST
+========================================================= */
 
-  return (
-    `${GEMINI_BASE}/models/` +
-    `${encodeURIComponent(model)}` +
-    ':predictLongRunning'
-  );
-}
-
-
-/*
- * ============================================================
- * READ JSON RESPONSE
- * ============================================================
- */
-
-async function readJsonResponse(response) {
+async function googleJson(response) {
 
   const text =
     await response.text();
@@ -297,7 +211,7 @@ async function readJsonResponse(response) {
         ? JSON.parse(text)
         : {};
 
-  } catch (error) {
+  } catch {
 
     throw new Error(
       `Google API returned invalid JSON (${response.status}).`
@@ -306,25 +220,22 @@ async function readJsonResponse(response) {
 
   if (!response.ok) {
 
-    const message =
+    throw new Error(
       data?.error?.message ||
       data?.message ||
-      `Google API request failed (${response.status}).`;
-
-    throw new Error(message);
+      `Google API error (${response.status}).`
+    );
   }
 
   return data;
 }
 
 
-/*
- * ============================================================
- * START INITIAL VEO GENERATION
- * ============================================================
- */
+/* =========================================================
+   INITIAL GENERATION
+========================================================= */
 
-async function startInitialGeneration(
+async function startInitial(
   job,
   config
 ) {
@@ -336,18 +247,40 @@ async function startInitialGeneration(
     getModel(config);
 
   if (!apiKey) {
+
     throw new Error(
       'GEMINI_API_KEY is not configured.'
     );
   }
 
-
   const endpoint =
-    generationEndpoint(model);
+    `${API_BASE}/models/` +
+    `${encodeURIComponent(model)}` +
+    ':predictLongRunning';
 
+  const prompt = [
 
-  const prompt =
-    buildInitialPrompt(job);
+    'Create the first 8-second segment of a longer continuous animated story.',
+
+    `Animation style: ${job.style}.`,
+
+    `Aspect ratio: ${job.aspectRatio}.`,
+
+    'Keep the main characters visually consistent.',
+
+    'Keep clothing, environment, lighting and colors consistent.',
+
+    'Use smooth cinematic camera movement.',
+
+    'Do not abruptly finish the story.',
+
+    'Make the final moment suitable for seamless video extension.',
+
+    'User story:',
+
+    job.prompt
+
+  ].join(' ');
 
 
   updateJob(job, {
@@ -361,10 +294,13 @@ async function startInitialGeneration(
 
 
   /*
-   * Veo 3.1 initial generation.
+   * IMPORTANT:
    *
-   * Always 8 seconds because this video will
-   * be used as the source for extension.
+   * numberOfVideos REMOVED.
+   *
+   * durationSeconds is valid for Veo 3.1,
+   * but 8 seconds is the required duration
+   * for extension workflows.
    */
 
   const body = {
@@ -386,10 +322,8 @@ async function startInitialGeneration(
         '8',
 
       resolution:
-        '720p',
+        '720p'
 
-      numberOfVideos:
-        1
     }
 
   };
@@ -410,23 +344,21 @@ async function startInitialGeneration(
 
           'x-goog-api-key':
             apiKey
+
         },
 
         body:
           JSON.stringify(body)
+
       }
     );
 
 
   const data =
-    await readJsonResponse(response);
+    await googleJson(response);
 
 
-  const operationName =
-    data?.name;
-
-
-  if (!operationName) {
+  if (!data?.name) {
 
     throw new Error(
       'Veo did not return an operation name.'
@@ -436,58 +368,51 @@ async function startInitialGeneration(
 
   updateJob(job, {
 
-    operationName,
+    operationName:
+      data.name,
 
     stage:
       'AI is generating the first scene',
 
     progress:
       10
+
   });
 
 
-  return operationName;
+  return data.name;
 }
 
 
-/*
- * ============================================================
- * POLL VEO OPERATION
- * ============================================================
- */
+/* =========================================================
+   POLL OPERATION
+========================================================= */
 
 async function pollOperation(
   operationName,
   apiKey,
   job,
-  progressStart,
-  progressEnd,
+  startProgress,
+  endProgress,
   stage
 ) {
 
-  const pollUrl =
-    `${GEMINI_BASE}/` +
+  const url =
+    `${API_BASE}/` +
     operationName.replace(/^\/+/, '');
 
-
-  const startedAt =
+  const started =
     Date.now();
 
-
-  /*
-   * Long-running generation can take time.
-   * Allow up to 20 minutes per Veo operation.
-   */
-
-  const MAX_WAIT =
+  const maxWait =
     20 * 60 * 1000;
 
 
   while (true) {
 
     if (
-      Date.now() - startedAt >
-      MAX_WAIT
+      Date.now() - started >
+      maxWait
     ) {
 
       throw new Error(
@@ -501,7 +426,7 @@ async function pollOperation(
 
     const response =
       await fetch(
-        pollUrl,
+        url,
         {
 
           method:
@@ -511,13 +436,15 @@ async function pollOperation(
 
             'x-goog-api-key':
               apiKey
+
           }
+
         }
       );
 
 
     const data =
-      await readJsonResponse(response);
+      await googleJson(response);
 
 
     if (data.done === true) {
@@ -530,31 +457,25 @@ async function pollOperation(
         );
       }
 
-
       return data;
     }
 
 
-    /*
-     * Smooth approximate progress.
-     */
-
     const elapsed =
-      Date.now() - startedAt;
-
+      Date.now() - started;
 
     const ratio =
       Math.min(
-        elapsed / (8 * 60 * 1000),
+        elapsed /
+        (8 * 60 * 1000),
         1
       );
 
-
     const progress =
       Math.round(
-        progressStart +
+        startProgress +
         (
-          (progressEnd - progressStart) *
+          (endProgress - startProgress) *
           ratio
         )
       );
@@ -565,58 +486,33 @@ async function pollOperation(
       stage,
 
       progress
+
     });
+
   }
 }
 
 
-/*
- * ============================================================
- * EXTRACT VIDEO URI
- * ============================================================
- */
+/* =========================================================
+   EXTRACT VIDEO URI
+========================================================= */
 
-function extractVideoUri(operation) {
+function videoUri(operation) {
 
-  /*
-   * Current REST response format.
-   */
-
-  const uri =
+  return (
     operation
       ?.response
       ?.generateVideoResponse
       ?.generatedSamples?.[0]
       ?.video
-      ?.uri;
-
-
-  if (uri) {
-    return uri;
-  }
-
-
-  /*
-   * Compatibility with alternate response shape.
-   */
-
-  const alternate =
-    operation
-      ?.response
-      ?.generatedVideos?.[0]
-      ?.video
-      ?.uri;
-
-
-  return alternate || '';
+      ?.uri
+  ) || '';
 }
 
 
-/*
- * ============================================================
- * DOWNLOAD VEO VIDEO
- * ============================================================
- */
+/* =========================================================
+   DOWNLOAD VIDEO
+========================================================= */
 
 async function downloadVideo(
   uri,
@@ -644,20 +540,17 @@ async function downloadVideo(
 
           'x-goog-api-key':
             apiKey
+
         }
+
       }
     );
 
 
   if (!response.ok) {
 
-    const text =
-      await response.text()
-        .catch(() => '');
-
     throw new Error(
-      `Video download failed (${response.status})` +
-      (text ? `: ${text.slice(0, 300)}` : '')
+      `Video download failed (${response.status}).`
     );
   }
 
@@ -671,7 +564,7 @@ async function downloadVideo(
   if (!buffer.length) {
 
     throw new Error(
-      'Downloaded Veo video is empty.'
+      'Downloaded video is empty.'
     );
   }
 
@@ -686,103 +579,15 @@ async function downloadVideo(
 }
 
 
-/*
- * ============================================================
- * BUILD INITIAL PROMPT
- * ============================================================
- */
-
-function buildInitialPrompt(job) {
-
-  const style =
-    job.style ||
-    '3D Animation';
-
-
-  const ratioInstruction =
-    job.aspectRatio === '9:16'
-      ? 'portrait vertical 9:16 composition'
-      : 'landscape horizontal 16:9 composition';
-
-
-  return [
-
-    `Create the opening 8-second segment of a longer animated story.`,
-
-    `Style: ${style}.`,
-
-    `Format: ${ratioInstruction}.`,
-
-    `The story must be visually coherent and suitable for continuation.`,
-
-    `Keep characters, clothing, environment, lighting, colors and objects consistent.`,
-
-    `Use smooth cinematic camera movement and natural motion.`,
-
-    `Do not end the story abruptly.`,
-
-    `Create a visually clear ending moment that can naturally continue into the next segment.`,
-
-    `Story / user request:`,
-
-    job.prompt
-
-  ].join(' ');
-}
-
-
-/*
- * ============================================================
- * BUILD EXTENSION PROMPT
- * ============================================================
- */
-
-function buildExtensionPrompt(job) {
-
-  const style =
-    job.style ||
-    '3D Animation';
-
-
-  return [
-
-    `Continue this existing animated video seamlessly.`,
-
-    `Style: ${style}.`,
-
-    `Continue directly from the final moment of the input video.`,
-
-    `Do not restart the story.`,
-
-    `Do not introduce an unrelated scene.`,
-
-    `Maintain exactly the same main characters, appearance, clothing, environment, lighting, color palette and visual style.`,
-
-    `Keep camera movement natural and cinematic.`,
-
-    `Continue the story and action smoothly for the next 7 seconds.`,
-
-    `The final result should feel like one continuous long video.`,
-
-    `Original story:`,
-
-    job.prompt
-
-  ].join(' ');
-}
-
-
-/*
- * ============================================================
- * EXTEND CURRENT VIDEO
- * ============================================================
- */
+/* =========================================================
+   EXTENSION
+========================================================= */
 
 async function extendVideo(
-  currentVideoPath,
+  currentPath,
   job,
   config,
-  extensionNumber
+  number
 ) {
 
   const apiKey =
@@ -792,25 +597,16 @@ async function extendVideo(
     getModel(config);
 
 
-  /*
-   * IMPORTANT:
-   *
-   * We send the exact bytes from the previous
-   * Veo generation.
-   *
-   * We do NOT run FFmpeg between extensions.
-   */
-
   const videoBuffer =
     fs.readFileSync(
-      currentVideoPath
+      currentPath
     );
 
 
   if (!videoBuffer.length) {
 
     throw new Error(
-      'Current Veo video is empty.'
+      'Previous video file is empty.'
     );
   }
 
@@ -819,9 +615,47 @@ async function extendVideo(
     videoBuffer.toString('base64');
 
 
-  const prompt =
-    buildExtensionPrompt(job);
+  const prompt = [
 
+    'Continue this existing Veo-generated video seamlessly.',
+
+    `Animation style: ${job.style}.`,
+
+    'Continue directly from the final moment.',
+
+    'Do not restart the story.',
+
+    'Do not change the main characters.',
+
+    'Keep clothing, environment, lighting and visual style consistent.',
+
+    'Continue the action naturally.',
+
+    'Create a smooth cinematic continuation.',
+
+    'Original story:',
+
+    job.prompt
+
+  ].join(' ');
+
+
+  const endpoint =
+    `${API_BASE}/models/` +
+    `${encodeURIComponent(model)}` +
+    ':predictLongRunning';
+
+
+  /*
+   * IMPORTANT FIX:
+   *
+   * numberOfVideos REMOVED.
+   *
+   * durationSeconds REMOVED from extension.
+   *
+   * Extension uses the Veo video input and
+   * 720p resolution.
+   */
 
   const body = {
 
@@ -840,6 +674,7 @@ async function extendVideo(
 
             data:
               base64
+
           }
 
         }
@@ -850,28 +685,33 @@ async function extendVideo(
 
     parameters: {
 
-      numberOfVideos:
-        1,
-
       resolution:
-        '720p',
+        '720p'
 
-      /*
-       * Extension must use 8 seconds.
-       * The API adds approximately 7 seconds
-       * to the existing video.
-       */
-
-      durationSeconds:
-        '8'
     }
 
   };
 
 
+  updateJob(job, {
+
+    stage:
+      `Preparing extension ${number}/${job.totalExtensions}`,
+
+    progress:
+      extensionProgress(
+        number,
+        job.totalExtensions,
+        25,
+        80
+      )
+
+  });
+
+
   const response =
     await fetch(
-      generationEndpoint(model),
+      endpoint,
       {
 
         method:
@@ -884,82 +724,64 @@ async function extendVideo(
 
           'x-goog-api-key':
             apiKey
+
         },
 
         body:
           JSON.stringify(body)
+
       }
     );
 
 
   const data =
-    await readJsonResponse(response);
+    await googleJson(response);
 
 
-  const operationName =
-    data?.name;
-
-
-  if (!operationName) {
+  if (!data?.name) {
 
     throw new Error(
-      `Veo extension ${extensionNumber} did not return an operation name.`
+      `Veo extension ${number} did not return an operation.`
     );
   }
-
-
-  updateJob(job, {
-
-    operationName,
-
-    stage:
-      `Extending video ${extensionNumber}/${job.totalExtensions}`,
-
-    progress:
-      calculateExtensionProgress(
-        extensionNumber,
-        job.totalExtensions,
-        25,
-        85
-      )
-  });
 
 
   const operation =
     await pollOperation(
 
-      operationName,
+      data.name,
 
       apiKey,
 
       job,
 
-      calculateExtensionProgress(
-        extensionNumber,
+      extensionProgress(
+        number,
         job.totalExtensions,
         25,
-        75
+        60
       ),
 
-      calculateExtensionProgress(
-        extensionNumber,
+      extensionProgress(
+        number,
         job.totalExtensions,
         25,
-        85
+        82
       ),
 
-      `AI is extending video ${extensionNumber}/${job.totalExtensions}`
+      `AI is extending video ${number}/${job.totalExtensions}`
+
     );
 
 
-  const videoUri =
-    extractVideoUri(operation);
+  const uri =
+    videoUri(operation);
 
 
-  if (!videoUri) {
+  if (!uri) {
 
     throw new Error(
-      `Veo extension ${extensionNumber} completed without a video.`
+      `Veo extension ${number} returned no video.`
     );
   }
 
@@ -967,31 +789,24 @@ async function extendVideo(
   const nextPath =
     path.join(
       DATA_DIR,
-      `${job.id}-extension-${extensionNumber}.mp4`
+      `${job.id}-ext-${number}.mp4`
     );
 
 
   await downloadVideo(
-    videoUri,
+    uri,
     apiKey,
     nextPath
   );
 
 
-  /*
-   * Remove previous temporary file.
-   */
-
   if (
-    currentVideoPath &&
-    currentVideoPath !== nextPath &&
-    fs.existsSync(currentVideoPath)
+    currentPath !== nextPath &&
+    fs.existsSync(currentPath)
   ) {
 
     try {
-      fs.unlinkSync(
-        currentVideoPath
-      );
+      fs.unlinkSync(currentPath);
     } catch (_) {}
 
   }
@@ -1001,13 +816,11 @@ async function extendVideo(
 }
 
 
-/*
- * ============================================================
- * PROGRESS CALCULATION
- * ============================================================
- */
+/* =========================================================
+   PROGRESS
+========================================================= */
 
-function calculateExtensionProgress(
+function extensionProgress(
   number,
   total,
   start,
@@ -1018,31 +831,24 @@ function calculateExtensionProgress(
     return end;
   }
 
-
-  const ratio =
-    number / total;
-
-
   return Math.round(
     start +
     (
       (end - start) *
-      ratio
+      (number / total)
     )
   );
 }
 
 
-/*
- * ============================================================
- * FINAL FFMPEG TRIM
- * ============================================================
- */
+/* =========================================================
+   FINAL FFMPEG
+========================================================= */
 
 async function finalizeVideo(
-  inputPath,
-  outputPath,
-  durationSec,
+  input,
+  output,
+  duration,
   job
 ) {
 
@@ -1053,25 +859,19 @@ async function finalizeVideo(
 
     progress:
       90
+
   });
 
-
-  /*
-   * Re-encode final file so the output duration
-   * is properly cut to the requested length.
-   *
-   * Audio is preserved.
-   */
 
   const args = [
 
     '-y',
 
     '-i',
-    inputPath,
+    input,
 
     '-t',
-    String(durationSec),
+    String(duration),
 
     '-map',
     '0:v:0',
@@ -1100,7 +900,8 @@ async function finalizeVideo(
     '-movflags',
     '+faststart',
 
-    outputPath
+    output
+
   ];
 
 
@@ -1117,19 +918,19 @@ async function finalizeVideo(
 
   } catch (error) {
 
-    const stderr =
-      error?.stderr ||
-      error?.message ||
-      'FFmpeg finalization failed.';
-
     throw new Error(
-      stderr.slice(-1500)
+      (
+        error?.stderr ||
+        error?.message ||
+        'FFmpeg finalization failed.'
+      ).slice(-2000)
     );
+
   }
 
 
   if (
-    !fs.existsSync(outputPath)
+    !fs.existsSync(output)
   ) {
 
     throw new Error(
@@ -1139,7 +940,7 @@ async function finalizeVideo(
 
 
   const stat =
-    fs.statSync(outputPath);
+    fs.statSync(output);
 
 
   if (stat.size < 1000) {
@@ -1150,17 +951,13 @@ async function finalizeVideo(
   }
 
 
-  /*
-   * Remove temporary Veo file.
-   */
-
   if (
-    inputPath !== outputPath &&
-    fs.existsSync(inputPath)
+    input !== output &&
+    fs.existsSync(input)
   ) {
 
     try {
-      fs.unlinkSync(inputPath);
+      fs.unlinkSync(input);
     } catch (_) {}
 
   }
@@ -1174,54 +971,46 @@ async function finalizeVideo(
     progress:
       100,
 
-    outputPath,
+    outputPath:
+      output,
 
     fileSize:
       stat.size,
 
     generatedDurationSec:
-      durationSec
+      duration
+
   });
 
-
-  return outputPath;
 }
 
 
-/*
- * ============================================================
- * CALCULATE REQUIRED EXTENSIONS
- * ============================================================
- */
+/* =========================================================
+   NUMBER OF EXTENSIONS
+========================================================= */
 
-function calculateExtensions(
-  durationSec
-) {
+function requiredExtensions(duration) {
 
   if (
-    durationSec <=
-    INITIAL_DURATION
+    duration <= INITIAL_SECONDS
   ) {
 
     return 0;
   }
 
-
   return Math.ceil(
     (
-      durationSec -
-      INITIAL_DURATION
+      duration -
+      INITIAL_SECONDS
     ) /
     EXTENSION_SECONDS
   );
 }
 
 
-/*
- * ============================================================
- * COMPLETE VIDEO GENERATION
- * ============================================================
- */
+/* =========================================================
+   PROCESS
+========================================================= */
 
 async function processAnimation(
   job,
@@ -1235,26 +1024,26 @@ async function processAnimation(
   if (!apiKey) {
 
     throw new Error(
-      'GEMINI_API_KEY is not configured on Render.'
+      'GEMINI_API_KEY is not configured.'
     );
   }
 
 
   /*
-   * 1. Initial 8-second video
+   * FIRST 8 SECOND VIDEO
    */
 
-  const initialOperation =
-    await startInitialGeneration(
+  const operation =
+    await startInitial(
       job,
       config
     );
 
 
-  const initialResult =
+  const result =
     await pollOperation(
 
-      initialOperation,
+      operation,
 
       apiKey,
 
@@ -1265,19 +1054,18 @@ async function processAnimation(
       22,
 
       'AI is generating the first scene'
+
     );
 
 
-  const initialUri =
-    extractVideoUri(
-      initialResult
-    );
+  const uri =
+    videoUri(result);
 
 
-  if (!initialUri) {
+  if (!uri) {
 
     throw new Error(
-      'Initial Veo generation completed without a video.'
+      'Initial Veo generation returned no video.'
     );
   }
 
@@ -1290,18 +1078,14 @@ async function processAnimation(
 
 
   await downloadVideo(
-    initialUri,
+    uri,
     apiKey,
     currentPath
   );
 
 
-  /*
-   * Initial generated duration.
-   */
-
   job.generatedDurationSec =
-    INITIAL_DURATION;
+    INITIAL_SECONDS;
 
 
   updateJob(job, {
@@ -1311,11 +1095,12 @@ async function processAnimation(
 
     progress:
       22
+
   });
 
 
   /*
-   * 2. Extend until enough duration exists.
+   * EXTENSIONS
    */
 
   for (
@@ -1333,16 +1118,12 @@ async function processAnimation(
       );
 
 
-    /*
-     * Each extension adds approximately 7 seconds.
-     */
-
     job.extensionCount =
       i;
 
 
     job.generatedDurationSec =
-      INITIAL_DURATION +
+      INITIAL_SECONDS +
       (
         i *
         EXTENSION_SECONDS
@@ -1355,18 +1136,20 @@ async function processAnimation(
         `Extended to approximately ${job.generatedDurationSec}s`,
 
       progress:
-        calculateExtensionProgress(
+        extensionProgress(
           i,
           job.totalExtensions,
           25,
           85
         )
+
     });
+
   }
 
 
   /*
-   * 3. Final exact-duration file.
+   * FINAL EXACT DURATION
    */
 
   const finalPath =
@@ -1386,14 +1169,13 @@ async function processAnimation(
 
     job
   );
+
 }
 
 
-/*
- * ============================================================
- * ROUTER
- * ============================================================
- */
+/* =========================================================
+   ROUTER
+========================================================= */
 
 function createAnimateRouter({ config }) {
 
@@ -1401,11 +1183,9 @@ function createAnimateRouter({ config }) {
     express.Router();
 
 
-  /*
-   * ==========================================================
-   * POST /api/animate/generate
-   * ==========================================================
-   */
+  /* -------------------------------------------------------
+     GENERATE
+  ------------------------------------------------------- */
 
   router.post(
     '/generate',
@@ -1436,15 +1216,6 @@ function createAnimateRouter({ config }) {
           );
 
 
-        /*
-         * Minimum 60 seconds.
-         *
-         * Frontend normally sends:
-         * 60 / 90 / 120
-         *
-         * Backend supports 60-148.
-         */
-
         let durationSec =
           Number(
             req.body?.durationSec
@@ -1457,6 +1228,7 @@ function createAnimateRouter({ config }) {
 
           durationSec =
             60;
+
         }
 
 
@@ -1476,6 +1248,7 @@ function createAnimateRouter({ config }) {
               `Minimum video duration is ${MIN_DURATION} seconds.`
 
           });
+
         }
 
 
@@ -1486,9 +1259,10 @@ function createAnimateRouter({ config }) {
           return res.status(400).json({
 
             error:
-              `Maximum supported duration is ${MAX_DURATION} seconds.`
+              `Maximum video duration is ${MAX_DURATION} seconds.`
 
           });
+
         }
 
 
@@ -1500,6 +1274,7 @@ function createAnimateRouter({ config }) {
               'Prompt is required.'
 
           });
+
         }
 
 
@@ -1513,6 +1288,7 @@ function createAnimateRouter({ config }) {
               'Prompt is too long. Maximum 2000 characters.'
 
           });
+
         }
 
 
@@ -1527,32 +1303,29 @@ function createAnimateRouter({ config }) {
               'Invalid aspect ratio.'
 
           });
+
         }
 
 
-        const allowedStyles = [
+        const styles = [
 
           '3D Animation',
-
           '2D Cartoon',
-
           'Anime',
-
           'Storybook',
-
           'Cinematic'
 
         ];
 
 
         const safeStyle =
-          allowedStyles.includes(style)
+          styles.includes(style)
             ? style
             : '3D Animation';
 
 
         const totalExtensions =
-          calculateExtensions(
+          requiredExtensions(
             durationSec
           );
 
@@ -1565,15 +1338,12 @@ function createAnimateRouter({ config }) {
           return res.status(400).json({
 
             error:
-              'Requested duration requires too many Veo extensions.'
+              'Requested duration is above the supported Veo extension limit.'
 
           });
+
         }
 
-
-        /*
-         * Create job.
-         */
 
         const id =
           `${Date.now().toString(36)}-` +
@@ -1643,314 +1413,32 @@ function createAnimateRouter({ config }) {
         );
 
 
-        /*
-         * Start in background.
-         */
-
         processAnimation(
           job,
           config
         )
-          .then(() => {
+        .then(() => {
 
-            updateJob(job, {
+          updateJob(job, {
 
-              status:
-                'completed',
+            status:
+              'completed',
 
-              stage:
-                'Video ready',
+            stage:
+              'Video ready',
 
-              progress:
-                100
-
-            });
-
-          })
-          .catch(error => {
-
-            console.error(
-              `[ANIMATE] Job ${job.id} failed:`,
-              error
-            );
-
-
-            updateJob(job, {
-
-              status:
-                'failed',
-
-              stage:
-                'Generation failed',
-
-              progress:
-                100,
-
-              error:
-                error?.message ||
-                'Video generation failed.'
-
-            });
+            progress:
+              100
 
           });
 
+        })
+        .catch(error => {
 
-        /*
-         * Return immediately.
-         *
-         * IMPORTANT:
-         * videoUrl is present from the beginning
-         * so the Blogger frontend can obtain token.
-         */
+          console.error(
+            `[ANIMATE] ${job.id}:`,
+            error
+          );
 
-        return res.status(202).json(
-          publicJob(
-            job,
-            req
-          )
-        );
 
-
-      } catch (error) {
-
-        console.error(
-          '[ANIMATE] Generate error:',
-          error
-        );
-
-
-        return res.status(500).json({
-
-          error:
-            error?.message ||
-            'Unable to start video generation.'
-
-        });
-
-      }
-
-    }
-  );
-
-
-  /*
-   * ==========================================================
-   * GET /api/animate/status/:jobId
-   * ==========================================================
-   */
-
-  router.get(
-    '/status/:jobId',
-    (req, res) => {
-
-      const job =
-        jobs.get(
-          req.params.jobId
-        );
-
-
-      if (!job) {
-
-        return res.status(404).json({
-
-          error:
-            'Animation job not found.'
-
-        });
-      }
-
-
-      if (
-        !isAuthorized(
-          job,
-          req
-        )
-      ) {
-
-        return res.status(403).json({
-
-          error:
-            'Invalid job token.'
-
-        });
-      }
-
-
-      return res.json(
-        publicJob(
-          job,
-          req
-        )
-      );
-
-    }
-  );
-
-
-  /*
-   * ==========================================================
-   * GET /api/animate/video/:jobId
-   * ==========================================================
-   */
-
-  router.get(
-    '/video/:jobId',
-    (req, res) => {
-
-      const job =
-        jobs.get(
-          req.params.jobId
-        );
-
-
-      if (!job) {
-
-        return res.status(404).json({
-
-          error:
-            'Animation job not found.'
-
-        });
-      }
-
-
-      if (
-        !isAuthorized(
-          job,
-          req
-        )
-      ) {
-
-        return res.status(403).json({
-
-          error:
-            'Invalid job token.'
-
-        });
-      }
-
-
-      if (
-        job.status !== 'completed' ||
-        !job.outputPath
-      ) {
-
-        return res.status(409).json({
-
-          error:
-            'Video is not ready yet.',
-
-          status:
-            job.status,
-
-          stage:
-            job.stage,
-
-          progress:
-            job.progress
-
-        });
-      }
-
-
-      if (
-        !fs.existsSync(
-          job.outputPath
-        )
-      ) {
-
-        return res.status(404).json({
-
-          error:
-            'Generated video file is no longer available.'
-
-        });
-      }
-
-
-      res.setHeader(
-        'Content-Type',
-        'video/mp4'
-      );
-
-
-      res.setHeader(
-        'Content-Disposition',
-        `inline; filename="animato-${job.durationSec}s-${job.id}.mp4"`
-      );
-
-
-      res.setHeader(
-        'Cache-Control',
-        'private, max-age=3600'
-      );
-
-
-      return res.sendFile(
-        path.resolve(
-          job.outputPath
-        )
-      );
-
-    }
-  );
-
-
-  /*
-   * ==========================================================
-   * GET /api/animate/health
-   * ==========================================================
-   */
-
-  router.get(
-    '/health',
-    (req, res) => {
-
-      return res.json({
-
-        status:
-          'ok',
-
-        feature:
-          'prompt-animation',
-
-        model:
-          getModel(config),
-
-        minimumDuration:
-          MIN_DURATION,
-
-        maximumDuration:
-          MAX_DURATION,
-
-        initialClipSeconds:
-          INITIAL_DURATION,
-
-        extensionSeconds:
-          EXTENSION_SECONDS,
-
-        maxExtensions:
-          MAX_EXTENSIONS,
-
-        jobs:
-          jobs.size
-
-      });
-
-    }
-  );
-
-
-  return router;
-}
-
-
-/*
- * ============================================================
- * EXPORT
- * ============================================================
- */
-
-module.exports = {
-  createAnimateRouter
-};
+          updateJob(job, {
