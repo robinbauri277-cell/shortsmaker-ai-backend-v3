@@ -1442,3 +1442,267 @@ function createAnimateRouter({ config }) {
 
 
           updateJob(job, {
+
+            status:
+              'failed',
+
+            stage:
+              'Generation failed',
+
+            progress:
+              100,
+
+            error:
+              error?.message ||
+              'Video generation failed.'
+
+          });
+
+        });
+
+
+        return res.status(202).json(
+          publicJob(
+            job,
+            req
+          )
+        );
+
+
+      } catch (error) {
+
+        console.error(
+          '[ANIMATE] Generate error:',
+          error
+        );
+
+
+        return res.status(500).json({
+
+          error:
+            error?.message ||
+            'Unable to start video generation.'
+
+        });
+
+      }
+
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     STATUS
+  ------------------------------------------------------- */
+
+  router.get(
+    '/status/:jobId',
+    (req, res) => {
+
+      const job =
+        jobs.get(
+          req.params.jobId
+        );
+
+
+      if (!job) {
+
+        return res.status(404).json({
+
+          error:
+            'Animation job not found.'
+
+        });
+
+      }
+
+
+      if (
+        !authorized(
+          job,
+          req
+        )
+      ) {
+
+        return res.status(403).json({
+
+          error:
+            'Invalid job token.'
+
+        });
+
+      }
+
+
+      return res.json(
+        publicJob(
+          job,
+          req
+        )
+      );
+
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     VIDEO
+  ------------------------------------------------------- */
+
+  router.get(
+    '/video/:jobId',
+    (req, res) => {
+
+      const job =
+        jobs.get(
+          req.params.jobId
+        );
+
+
+      if (!job) {
+
+        return res.status(404).json({
+
+          error:
+            'Animation job not found.'
+
+        });
+
+      }
+
+
+      if (
+        !authorized(
+          job,
+          req
+        )
+      ) {
+
+        return res.status(403).json({
+
+          error:
+            'Invalid job token.'
+
+        });
+
+      }
+
+
+      if (
+        job.status !== 'completed' ||
+        !job.outputPath
+      ) {
+
+        return res.status(409).json({
+
+          error:
+            'Video is not ready yet.',
+
+          status:
+            job.status,
+
+          stage:
+            job.stage,
+
+          progress:
+            job.progress
+
+        });
+
+      }
+
+
+      if (
+        !fs.existsSync(
+          job.outputPath
+        )
+      ) {
+
+        return res.status(404).json({
+
+          error:
+            'Generated video file is unavailable.'
+
+        });
+
+      }
+
+
+      res.setHeader(
+        'Content-Type',
+        'video/mp4'
+      );
+
+
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="animato-${job.durationSec}s-${job.id}.mp4"`
+      );
+
+
+      res.setHeader(
+        'Cache-Control',
+        'private, max-age=3600'
+      );
+
+
+      return res.sendFile(
+        path.resolve(
+          job.outputPath
+        )
+      );
+
+    }
+  );
+
+
+  /* -------------------------------------------------------
+     HEALTH
+  ------------------------------------------------------- */
+
+  router.get(
+    '/health',
+    (req, res) => {
+
+      return res.json({
+
+        status:
+          'ok',
+
+        feature:
+          'prompt-animation',
+
+        model:
+          getModel(config),
+
+        minimumDuration:
+          MIN_DURATION,
+
+        maximumDuration:
+          MAX_DURATION,
+
+        initialClipSeconds:
+          INITIAL_SECONDS,
+
+        extensionSeconds:
+          EXTENSION_SECONDS,
+
+        maxExtensions:
+          MAX_EXTENSIONS,
+
+        jobs:
+          jobs.size
+
+      });
+
+    }
+  );
+
+
+  return router;
+}
+
+
+module.exports = {
+  createAnimateRouter
+};
